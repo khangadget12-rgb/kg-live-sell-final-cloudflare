@@ -48,7 +48,16 @@ export class KGAppDatabase extends DurableObject<Env> {
       }
     }
 
-    globalRuntime.__KG_SQL_STORAGE__ = this.ctx.storage.sql;
+    // Cloudflare exposes SQL statements on ctx.storage.sql, but the
+    // synchronous transaction API belongs to ctx.storage itself.
+    // Do not pass ctx.storage.sql directly: SqlStorage has exec(), but no
+    // transactionSync(), which caused login/session requests to throw 500.
+    const durableStorage = this.ctx.storage;
+    const sqlStorage = durableStorage.sql;
+    globalRuntime.__KG_SQL_STORAGE__ = {
+      exec: (query: string, ...bindings: any[]) => sqlStorage.exec(query, ...bindings),
+      transactionSync: <T>(callback: () => T): T => durableStorage.transactionSync(callback),
+    };
     globalRuntime.__KG_BUILTIN_ASSETS__ = builtinAssets;
     globalRuntime.__KG_SCHEDULE_ALARM__ = (delayMs: number) =>
       this.ctx.storage.setAlarm(Date.now() + Math.max(1000, delayMs));
