@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="KG Emblem">
+  <circle cx="64" cy="64" r="64" fill="#0F172A" />
+  <path
+    d="M 107.1 34.9 A 52 52 0 1 0 115.5 57 L 76 57 L 76 68 L 104.8 68 A 41 41 0 1 1 98.0 41.1 Z"
+    fill="#FFFFFF"
+  />
+  <path
+    d="M 39 38 H 49 V 89 H 39 Z M 49 58 L 71 38 H 84 L 56 64 Z M 55 59 L 84 89 H 71 L 49 66 Z"
+    fill="#FFFFFF"
+  />
+</svg>

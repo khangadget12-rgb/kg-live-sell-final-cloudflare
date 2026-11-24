@@ -1,0 +1,23 @@
+name = "kg-live-sell-final"
+main = "cloudflare-worker.ts"
+compatibility_date = "2026-11-24"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+upload_source_maps = true
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[[durable_objects.bindings]]
+name = "APP_DB"
+class_name = "KGAppDatabase"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["KGAppDatabase"]
+
+[observability]
+enabled = true

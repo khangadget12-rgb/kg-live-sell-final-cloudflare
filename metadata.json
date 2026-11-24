@@ -1,0 +1,6 @@
+{
+  "name": "Khan Gadget | KG Live Sell",
+  "description": "Khan Gadget unified laptop-only live sales, multi-branch inventory, SpecLedger smart laptop finder, and refill reminder platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

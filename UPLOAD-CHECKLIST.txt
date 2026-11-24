@@ -1,0 +1,18 @@
+KG LIVE SELL 2.5.0 — CLEAN RESTART CHECKLIST
+
+[ ] Download and extract the full ZIP.
+[ ] Create a NEW EMPTY PRIVATE GitHub repo: kg-live-sell-final-cloudflare.
+[ ] Upload extracted folder CONTENTS to repo root, preserving folders.
+[ ] Confirm no bun.lock, bun.lockb, patches/ folder, or patchedDependencies.
+[ ] Keep the old Worker and its Durable Object untouched for rollback.
+[ ] Create a NEW Worker named kg-live-sell-final.
+[ ] Connect the new Worker to the new GitHub repository; branch main; root /.
+[ ] Under Settings > Builds > Build variables and secrets add SKIP_DEPENDENCY_INSTALL=1.
+[ ] Build command: npm install --no-audit --no-fund && npm run build
+[ ] Deploy command: npx wrangler deploy
+[ ] Verify logs run npm install, not bun install.
+[ ] Verify /api/health returns ok:true and db:connected.
+[ ] Verify /api/auth/bootstrap-status returns needsSetup:true on a fresh database.
+[ ] Claim the first Super Admin account immediately.
+[ ] Test sales, ledger, inventory, accounts, activity, backup/restore.
+[ ] Only then consider deleting the old Worker; do not delete old DB resources until archived.
