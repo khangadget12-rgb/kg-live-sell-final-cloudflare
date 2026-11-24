@@ -60,7 +60,8 @@ export class KGAppDatabase extends DurableObject<Env> {
     };
     globalRuntime.__KG_BUILTIN_ASSETS__ = builtinAssets;
     globalRuntime.__KG_SCHEDULE_ALARM__ = (delayMs: number) =>
-      this.ctx.storage.setAlarm(Date.now() + Math.max(1000, delayMs));
+      this.ctx.storage.setAlarm(Date.now() + Math.max(15_000, delayMs));
+    globalRuntime.__KG_DELETE_ALARM__ = () => this.ctx.storage.deleteAlarm();
 
     // Optional bootstrap secret. When configured, first-run setup is locked
     // and the owner signs in as `superadmin` using this passcode.
@@ -109,8 +110,19 @@ export class KGAppDatabase extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    await this.ensureInitialized();
-    await this.serverModule?.runScheduledRajshahiSync();
+    try {
+      await this.ensureInitialized();
+      await this.serverModule?.runScheduledRajshahiSync();
+    } catch (error) {
+      console.error('Rajshahi scheduled scan alarm failed:', error);
+      // Cloudflare removes the current alarm before invoking alarm(). Keep a
+      // retry scheduled even if initialization or an unexpected DB error fails.
+      try {
+        await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      } catch (rescheduleError) {
+        console.error('Could not schedule Rajshahi alarm retry:', rescheduleError);
+      }
+    }
   }
 }
 

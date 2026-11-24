@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   LayoutDashboard,
   ShoppingBag,
@@ -23,7 +23,9 @@ import {
 import type { AppTab, NotificationRecord, UserAccount } from '../lib/types';
 import { KgEmblem } from './KgEmblem';
 import {
+  enableNotificationAudio,
   requestBrowserNotificationPermission,
+  triggerBrowserNotification,
   useOnlineStatus,
   usePWAInstall,
 } from '../services/soundAndPwa';
@@ -58,6 +60,7 @@ interface AppShellProps {
   onMarkRead: (id: number) => void;
   onMarkAllRead: () => void;
   onToggleSound: () => void;
+  onToggleNotificationPreference: () => void;
   children: React.ReactNode;
 }
 
@@ -72,11 +75,13 @@ export const AppShell: React.FC<AppShellProps> = ({
   onMarkRead,
   onMarkAllRead,
   onToggleSound,
+  onToggleNotificationPreference,
   children,
 }) => {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [showIOSInstall, setShowIOSInstall] = useState(false);
+  const audioUnlockedRef = useRef(false);
   const [browserPerm, setBrowserPerm] = useState<string>(
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
   );
@@ -90,13 +95,48 @@ export const AppShell: React.FC<AppShellProps> = ({
   const roleLabel =
     user.role === 'super_admin' ? 'Super Admin' : user.role === 'admin' ? 'Admin' : 'Staff';
 
+  React.useEffect(() => {
+    if (!notifOpen) return;
+    setBrowserPerm(typeof Notification !== 'undefined' ? Notification.permission : 'unsupported');
+  }, [notifOpen]);
+
+  const unlockAudioOnFirstGesture = () => {
+    if (audioUnlockedRef.current) return;
+    audioUnlockedRef.current = true;
+    // Browsers require a user gesture before custom tones can play. Unlock
+    // silently on the user's first interaction with the signed-in app.
+    void enableNotificationAudio(false);
+  };
+
   const handlePermission = async () => {
+    // Start/resume audio synchronously inside the tap before awaiting the
+    // permission prompt, otherwise mobile autoplay policies can reject it.
+    const audioUnlock = enableNotificationAudio();
     const res = await requestBrowserNotificationPermission();
+    await audioUnlock.catch(() => false);
     setBrowserPerm(res);
+    if (res === 'granted') {
+      await triggerBrowserNotification('KG Live Sell alerts enabled', 'This device can now show KG Live Sell alerts while KG Live Sell is open or running in the background.');
+    }
+  };
+
+  const handleTestSound = async () => {
+    const unlocked = await enableNotificationAudio();
+    if (!unlocked) {
+      window.alert('Sound is blocked by this browser or device. Tap the page once, check device volume, then try again.');
+    }
+  };
+
+  const handleTestNotification = async () => {
+    const ok = await triggerBrowserNotification('KG Live Sell test alert', 'Browser notifications are working on this device.');
+    if (!ok) window.alert('The test alert could not be displayed. Check browser notification permission and install KG Live Sell on the Home Screen on iPhone/iPad.');
   };
 
   return (
-    <div className="min-h-screen flex bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
+    <div
+      className="min-h-screen flex bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+      onPointerDownCapture={unlockAudioOnFirstGesture}
+    >
       {/* Desktop Sidebar */}
       <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
         <div className="h-16 px-5 flex items-center justify-center border-b border-slate-200 dark:border-slate-800">
@@ -274,8 +314,7 @@ export const AppShell: React.FC<AppShellProps> = ({
               </button>
             )}
 
-            {user.role !== 'staff' && (
-              <button
+            <button
                 type="button"
                 aria-label={`Notifications (${unreadCount} unread)`}
                 onClick={() => setNotifOpen(true)}
@@ -289,7 +328,6 @@ export const AppShell: React.FC<AppShellProps> = ({
                   </span>
                 )}
               </button>
-            )}
 
             <button
               type="button"
@@ -340,35 +378,61 @@ export const AppShell: React.FC<AppShellProps> = ({
             </div>
 
             <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-slate-50 dark:bg-slate-950/50">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={onToggleSound}
                   className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium"
                 >
                   {user.preferences.soundEnabled ? (
-                    <>
-                      <Volume2 className="w-3.5 h-3.5 text-teal-600" />
-                      <span>Sound On</span>
-                    </>
+                    <><Volume2 className="w-3.5 h-3.5 text-teal-600" /><span>Sound On</span></>
                   ) : (
-                    <>
-                      <VolumeX className="w-3.5 h-3.5 text-slate-400" />
-                      <span>Sound Muted</span>
-                    </>
+                    <><VolumeX className="w-3.5 h-3.5 text-slate-400" /><span>Sound Muted</span></>
                   )}
                 </button>
-
+                <button
+                  type="button"
+                  onClick={handleTestSound}
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium"
+                >
+                  Test Sound
+                </button>
+                <button
+                  type="button"
+                  onClick={onToggleNotificationPreference}
+                  className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium ${user.receiveNotifications ? 'border-teal-300 bg-teal-50 text-teal-800 dark:bg-teal-950/30 dark:text-teal-300' : 'border-slate-200 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'}`}
+                >
+                  Alerts {user.receiveNotifications ? 'On' : 'Off'}
+                </button>
                 {browserPerm !== 'granted' && browserPerm !== 'unsupported' && (
                   <button
                     type="button"
                     onClick={handlePermission}
                     className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-teal-700 dark:text-teal-300"
                   >
-                    Enable Browser Alerts
+                    {browserPerm === 'denied' ? 'Allow in Site Settings' : 'Enable Browser Alerts'}
+                  </button>
+                )}
+                {browserPerm === 'granted' && (
+                  <button
+                    type="button"
+                    onClick={handleTestNotification}
+                    className="px-2.5 py-1.5 rounded-lg border border-teal-200 bg-teal-50 text-teal-800 dark:border-teal-900 dark:bg-teal-950/30 dark:text-teal-300 text-xs font-medium"
+                  >
+                    Test Alert
                   </button>
                 )}
               </div>
+              {isIOS && !isInstalled && (
+                <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-300">
+                  iPhone/iPad: add KG Live Sell to your Home Screen, open the installed app, then enable alerts there.
+                </p>
+              )}
+              {browserPerm === 'denied' && (
+                <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-300">
+                  Notifications are blocked in this browser. Change this site's Notifications permission in browser settings, then reload.
+                </p>
+              )}
 
               {unreadCount > 0 && (
                 <button

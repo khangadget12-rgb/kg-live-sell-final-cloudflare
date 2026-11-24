@@ -315,6 +315,61 @@ export function categorizeLaptop(params: {
   return 'Business Pro';
 }
 
+
+function normalizeStockHeader(value: string): string {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function findHeaderIndex(headers: string[], accepted: string[]): number {
+  const normalized = headers.map(normalizeStockHeader);
+  return normalized.findIndex((header) => accepted.includes(header));
+}
+
+function findRajshahiHeaderRow(rows: string[][]): number {
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+    const normalized = rows[i].map(normalizeStockHeader);
+    const hasBrand = normalized.some((header) => ['brand', 'brandname', 'laptopbrand'].includes(header));
+    const hasModel = normalized.some((header) => ['model', 'modelname', 'laptopmodel', 'productmodel'].includes(header));
+    if (hasBrand && hasModel) return i;
+  }
+  return -1;
+}
+
+function findBranchStockColumn(headers: string[], branch: BranchCode): number {
+  const aliases: Record<BranchCode, string[]> = {
+    RG: ['rg', 'railgate', 'railgaterg', 'railgatebranch', 'rajshahirailgate', 'rajshahirl'],
+    NM: ['nm', 'newmarket', 'newmarketnm', 'newmarketbranch', 'rajshahinewmarket'],
+    JSM: ['jsm', 'jamalsupermarket', 'jamalsuperstore', 'jamalmarket', 'jamalsupermarketjsm'],
+    CC: ['cc', 'citycenter', 'citycentre', 'citycentercc', 'citycentrecc', 'citycenterbranch'],
+  };
+  const suffixes = ['stock', 'qty', 'quantity', 'units', 'balance', 'available', 'count', 'onhand'];
+  const normalized = headers.map(normalizeStockHeader);
+  return normalized.findIndex((header) => {
+    if (aliases[branch].includes(header)) return true;
+    return aliases[branch].some((alias) =>
+      suffixes.some((suffix) => header === `${alias}${suffix}`)
+    );
+  });
+}
+
+export function validateRajshahiSheetRows(rows: string[][]): { valid: boolean; headerRow: number; missingColumns: string[]; dataRowCount: number } {
+  const headerRow = findRajshahiHeaderRow(rows);
+  if (headerRow < 0) {
+    return { valid: false, headerRow: -1, missingColumns: ['Brand', 'Model', 'RG', 'NM', 'JSM', 'CC'], dataRowCount: 0 };
+  }
+  const headers = rows[headerRow];
+  const missingColumns = (['RG', 'NM', 'JSM', 'CC'] as BranchCode[])
+    .filter((branch) => findBranchStockColumn(headers, branch) < 0);
+  const brandIndex = findHeaderIndex(headers, ['brand', 'brandname', 'laptopbrand']);
+  const modelIndex = findHeaderIndex(headers, ['model', 'modelname', 'laptopmodel', 'productmodel']);
+  const dataRowCount = rows.slice(headerRow + 1).filter((row) => {
+    const brand = row[brandIndex]?.trim();
+    const model = row[modelIndex]?.trim();
+    return Boolean(brand && model && !brand.toLowerCase().startsWith('total') && !model.toLowerCase().startsWith('total'));
+  }).length;
+  return { valid: missingColumns.length === 0 && dataRowCount > 0, headerRow, missingColumns, dataRowCount };
+}
+
 export interface SheetParseOptions {
   datasetId: string;
   defaultBranch?: BranchCode | null;
@@ -330,16 +385,9 @@ export function parseRowsToLaptops(
 ): LaptopRecord[] {
   if (rows.length < 2) return [];
 
-  // Find header row (looks for Brand and Model columns)
-  let headerIdx = 0;
-  for (let i = 0; i < Math.min(rows.length, 6); i++) {
-    const lowerRow = rows[i].map((c) => c.toLowerCase());
-    if (lowerRow.some((c) => c === 'brand') && lowerRow.some((c) => c === 'model')) {
-      headerIdx = i;
-      break;
-    }
-  }
-
+  // Detect the header row even when the sheet contains a title/instructions above it.
+  const detectedHeaderIdx = findRajshahiHeaderRow(rows);
+  const headerIdx = detectedHeaderIdx >= 0 ? detectedHeaderIdx : 0;
   const headers = rows[headerIdx].map((h) => h.trim().toLowerCase());
   const findCol = (...candidates: string[]): number => {
     for (const cand of candidates) {
@@ -360,10 +408,10 @@ export function parseRowsToLaptops(
   const colAsk = findCol('ask. price', 'asking', 'ask');
   const colDis = findCol('dis. price', 'discounted', 'dis');
   const colBorder = findCol('border');
-  const colRg = headers.findIndex((h) => h === 'rg');
-  const colNm = headers.findIndex((h) => h === 'nm');
-  const colJsm = headers.findIndex((h) => h === 'jsm');
-  const colCc = headers.findIndex((h) => h === 'cc');
+  const colRg = findBranchStockColumn(headers, 'RG');
+  const colNm = findBranchStockColumn(headers, 'NM');
+  const colJsm = findBranchStockColumn(headers, 'JSM');
+  const colCc = findBranchStockColumn(headers, 'CC');
   const colQty = findCol('qty', 'quantity');
   const colCond = headers.findIndex((h) => h === 'condition');
   const colDetailCond = findCol('detailed condition');

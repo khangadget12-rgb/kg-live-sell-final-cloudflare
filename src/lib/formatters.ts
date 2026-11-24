@@ -66,15 +66,9 @@ export function extractGoogleSheetCsvUrl(rawUrl: string): string | null {
   if (!clean) return null;
   try {
     const parsed = new URL(clean);
-    if (!parsed.hostname.endsWith('google.com')) return null;
+    const host = parsed.hostname.toLowerCase();
+    if (!['docs.google.com', 'sheets.google.com'].includes(host)) return null;
 
-    if (clean.includes('output=csv') || clean.includes('/export?format=csv') || clean.includes('tqx=out:csv')) {
-      return clean;
-    }
-
-    const match = parsed.pathname.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-    if (!match) return null;
-    const sheetId = match[1];
     let gid = '0';
     const gidQuery = parsed.searchParams.get('gid');
     if (gidQuery && /^\d+$/.test(gidQuery)) {
@@ -83,7 +77,37 @@ export function extractGoogleSheetCsvUrl(rawUrl: string): string | null {
       const gidHash = parsed.hash.match(/gid=(\d+)/);
       if (gidHash) gid = gidHash[1];
     }
-    return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+
+    // Google "Publish to web" links use /d/e/<published-id>/pubhtml.
+    // They are not normal spreadsheet IDs: converting them to /d/e/export
+    // silently fetches the wrong document and leaves stock stale.
+    const publishedMatch = parsed.pathname.match(
+      /^\/spreadsheets\/d\/e\/([^/]+)\/(?:pubhtml|pub)\/?$/i
+    );
+    if (publishedMatch) {
+      const publishedId = publishedMatch[1];
+      const pubUrl = new URL(`https://docs.google.com/spreadsheets/d/e/${publishedId}/pub`);
+      pubUrl.searchParams.set('output', 'csv');
+      pubUrl.searchParams.set('gid', gid);
+      pubUrl.searchParams.set('single', 'true');
+      return pubUrl.toString();
+    }
+
+    // Existing CSV endpoints are preserved, including published URLs that
+    // already carry output=csv and normal /export?format=csv links.
+    if (
+      parsed.searchParams.get('output') === 'csv' ||
+      (parsed.pathname.endsWith('/export') && parsed.searchParams.get('format') === 'csv') ||
+      parsed.searchParams.get('tqx')?.toLowerCase().includes('out:csv')
+    ) {
+      return clean;
+    }
+
+    // Standard editor/share link: /spreadsheets/d/<sheet-id>/edit.
+    const match = parsed.pathname.match(/^\/spreadsheets\/d\/([a-zA-Z0-9_-]+)(?:\/|$)/);
+    if (!match || match[1] === 'e') return null;
+    const sheetId = match[1];
+    return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${encodeURIComponent(gid)}`;
   } catch {
     return null;
   }

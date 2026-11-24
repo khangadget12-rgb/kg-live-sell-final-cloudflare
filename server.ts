@@ -30,7 +30,7 @@ import {
 } from './src/lib/formatters.ts';
 import { evaluateRefillForLaptop } from './src/lib/refillLogic.ts';
 import { diffLaptopSnapshots, normalizeCsvContent } from './src/lib/sheetSync.ts';
-import { parseDelimitedRows, parseRowsToLaptops } from './src/lib/specParser.ts';
+import { parseDelimitedRows, parseRowsToLaptops, validateRajshahiSheetRows } from './src/lib/specParser.ts';
 import { BRANCH_ORDER } from './src/lib/types.ts';
 import type {
   AccessoryCategory,
@@ -311,7 +311,7 @@ function syncRefillAlertsForLaptop(laptop: LaptopRecord, nowIso: string): Array<
 
 function getNotificationRecipients(): number[] {
   const rows = db
-    .prepare("SELECT id FROM users WHERE is_active = 1 AND receive_notifications = 1 AND role IN ('super_admin', 'admin')")
+    .prepare('SELECT id FROM users WHERE is_active = 1 AND receive_notifications = 1')
     .all() as Array<{ id: number }>;
   return rows.map((r) => r.id);
 }
@@ -359,9 +359,10 @@ let rajshahiScanTimer: NodeJS.Timeout | null = null;
 
 function broadcastRealtimeEvent(
   type: RealtimeSyncEvent['type'],
-  payload: Omit<RealtimeSyncEvent, 'type'> = {}
+  payload: Omit<RealtimeSyncEvent, 'type'> = {},
+  bumpInventoryVersion = true
 ): void {
-  syncVersionCounter += 1;
+  if (bumpInventoryVersion) syncVersionCounter += 1;
   const eventPayload: RealtimeSyncEvent = {
     type,
     syncVersion: syncVersionCounter,
@@ -384,31 +385,99 @@ function getConfiguredRajshahiSheetUrl(): string {
   const sheetRow = db
     .prepare("SELECT url FROM google_sheets WHERE LOWER(name) LIKE '%rajshahi%' ORDER BY sort_order ASC, id ASC LIMIT 1")
     .get() as { url?: string } | undefined;
-  if (sheetRow?.url && extractGoogleSheetCsvUrl(sheetRow.url)) {
-    return String(sheetRow.url);
-  }
+  if (sheetRow?.url && extractGoogleSheetCsvUrl(sheetRow.url)) return String(sheetRow.url);
   return '';
 }
 
 function getRajshahiSyncStatus(): RajshahiSyncStatus {
-  const intervalRaw = Number(getAppSetting('rajshahi_scan_interval_sec', '10'));
-  const intervalSeconds = Number.isFinite(intervalRaw) ? Math.min(120, Math.max(5, Math.round(intervalRaw))) : 10;
+  const intervalRaw = Number(getAppSetting('rajshahi_scan_interval_sec', '30'));
+  const intervalSeconds = Number.isFinite(intervalRaw) ? Math.min(300, Math.max(15, Math.round(intervalRaw))) : 30;
+  const lastScanSetting = getAppSetting('rajshahi_last_scan_at', '');
+  const lastErrorSetting = getAppSetting('rajshahi_last_scan_error', '');
+  const modelCount = Number(getAppSetting('rajshahi_last_scan_models', '0')) || 0;
+  const totalUnits = Number(getAppSetting('rajshahi_last_scan_units', '0')) || 0;
+  const branchSummary = getAppSetting('rajshahi_last_scan_branches', '');
   return {
     sheetUrl: getConfiguredRajshahiSheetUrl(),
     autoScanEnabled: getAppSetting('rajshahi_auto_scan_enabled', '1') === '1',
     intervalSeconds,
     scanning: isScanningRajshahi,
-    lastScanAt,
+    lastScanAt: lastScanSetting || lastScanAt,
     lastSyncedAt: getAppSetting('rajshahi_last_sync_at', '') || null,
     lastChangeSummary: getAppSetting('rajshahi_last_change_summary', '') || null,
-    lastError: lastSyncError,
+    lastError: lastErrorSetting || lastSyncError,
+    lastScanSummary: getAppSetting('rajshahi_last_scan_summary', '') || null,
+    nextScanAt: getAppSetting('rajshahi_next_scan_at', '') || null,
+    lastScanModelCount: modelCount,
+    lastScanTotalUnits: totalUnits,
+    lastScanBranchSummary: branchSummary || null,
     syncVersion: syncVersionCounter,
   };
 }
 
+function summarizeRajshahiBranchUnits(laptops: LaptopRecord[]): string {
+  const totals = laptops.reduce((sum, laptop) => {
+    sum.RG += Number(laptop.rg) || 0;
+    sum.NM += Number(laptop.nm) || 0;
+    sum.JSM += Number(laptop.jsm) || 0;
+    sum.CC += Number(laptop.cc) || 0;
+    return sum;
+  }, { RG: 0, NM: 0, JSM: 0, CC: 0 });
+  return `RG ${totals.RG} · NM ${totals.NM} · JSM ${totals.JSM} · CC ${totals.CC}`;
+}
+
 function buildCacheBustedSheetUrl(csvUrl: string): string {
-  const sep = csvUrl.includes('?') ? '&' : '?';
-  return `${csvUrl}${sep}_cb=${Date.now()}`;
+  const parsed = new URL(csvUrl);
+  parsed.searchParams.set('_kg_live_scan', `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`);
+  return parsed.toString();
+}
+
+async function fetchRajshahiCsv(csvUrl: string): Promise<string> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 18_000);
+    try {
+      const response = await fetch(buildCacheBustedSheetUrl(csvUrl), {
+        method: 'GET',
+        redirect: 'follow',
+        cache: 'no-store',
+        signal: controller.signal,
+        headers: {
+          Accept: 'text/csv,application/csv,text/plain;q=0.9,*/*;q=0.1',
+          'Cache-Control': 'no-cache, no-store, max-age=0',
+          Pragma: 'no-cache',
+        },
+      });
+      if (!response.ok) {
+        const error = new Error(`Google Sheets returned HTTP ${response.status}. Check that the Rajshahi sheet is published to the web or shared with viewers.`);
+        if (attempt === 0 && response.status >= 500) {
+          lastError = error;
+          await new Promise((resolve) => setTimeout(resolve, 700));
+          continue;
+        }
+        throw error;
+      }
+      const text = await response.text();
+      const trimmed = text.trimStart().toLowerCase();
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('text/html') || trimmed.startsWith('<!doctype html') || trimmed.startsWith('<html')) {
+        throw new Error('Google returned an HTML page instead of CSV. Publish the Rajshahi tab as CSV and enable automatic republishing.');
+      }
+      if (!text.trim()) throw new Error('Google returned an empty CSV. Existing inventory was kept unchanged.');
+      return text;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('Failed to download Rajshahi Google Sheet.');
+      if (attempt === 0 && (lastError.name === 'AbortError' || /fetch|network|timeout|HTTP 5\d\d/i.test(lastError.message))) {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        continue;
+      }
+      throw lastError;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw lastError || new Error('Could not fetch the Rajshahi Google Sheet.');
 }
 
 async function syncRajshahiSheetNow(actorName?: string): Promise<{
@@ -418,233 +487,210 @@ async function syncRajshahiSheetNow(actorName?: string): Promise<{
   totalUnits: number;
   summary: string;
 }> {
-  if (inFlightRajshahiSync) {
-    return inFlightRajshahiSync;
-  }
+  if (inFlightRajshahiSync) return inFlightRajshahiSync;
 
-  inFlightRajshahiSync = (async () => {
+  const task = (async () => {
+    let changed = false;
+    let modelCount = 0;
+    let totalUnits = 0;
+    let summary = '';
+    let branchSummary = '';
+    let scanError: string | null = null;
     isScanningRajshahi = true;
+    broadcastRealtimeEvent('sync_status_updated', { reason: 'rajshahi_scan_started' }, false);
+
     try {
       const sheetUrl = getConfiguredRajshahiSheetUrl();
+      const previousLaptops = getLaptopsByDataset('rajshahi_main');
+      modelCount = previousLaptops.length;
+      totalUnits = previousLaptops.reduce((sum, laptop) => sum + laptop.qty, 0);
+      branchSummary = summarizeRajshahiBranchUnits(previousLaptops);
+
       if (!sheetUrl) {
-        const existing = getLaptopsByDataset('rajshahi_main');
-        const totalUnits = existing.reduce((sum, l) => sum + l.qty, 0);
-        lastScanAt = new Date().toISOString();
-        lastSyncError = null;
-        return {
-          changed: false,
-          status: getRajshahiSyncStatus(),
-          modelCount: existing.length,
-          totalUnits,
-          summary: 'No live Rajshahi Google Sheet URL configured yet.',
-        };
-      }
+        summary = 'No Rajshahi live Google Sheet URL is configured. Existing inventory is unchanged.';
+      } else {
+        const csvUrl = extractGoogleSheetCsvUrl(sheetUrl);
+        if (!csvUrl || !isAllowedGoogleSheetsUrl(csvUrl)) {
+          throw new Error('Invalid Rajshahi Google Sheets URL. Use a public docs.google.com spreadsheet URL.');
+        }
 
-      const csvUrl = extractGoogleSheetCsvUrl(sheetUrl);
-      if (!csvUrl || !isAllowedGoogleSheetsUrl(csvUrl)) {
-        lastScanAt = new Date().toISOString();
-        lastSyncError = 'Invalid Rajshahi Google Sheets URL (must be a public docs.google.com spreadsheet link).';
-        return {
-          changed: false,
-          status: getRajshahiSyncStatus(),
-          modelCount: 0,
-          totalUnits: 0,
-          summary: lastSyncError,
-        };
-      }
+        const csvText = await fetchRajshahiCsv(csvUrl);
+        const rows = parseDelimitedRows(csvText);
+        const validation = validateRajshahiSheetRows(rows);
+        if (!validation.valid) {
+          const missing = validation.missingColumns.length ? ` Missing branch columns: ${validation.missingColumns.join(', ')}.` : '';
+          throw new Error(`Rajshahi sheet validation failed: ${validation.dataRowCount} valid laptop rows found.${missing} Required headers are Brand, Model, RG, NM, JSM and CC. Existing inventory was kept unchanged.`);
+        }
 
-      const resp = await fetch(buildCacheBustedSheetUrl(csvUrl), {
-        redirect: 'follow',
-        cache: 'no-store',
-        headers: { 'Cache-Control': 'no-cache' },
-      });
-      lastScanAt = new Date().toISOString();
+        const normalized = normalizeCsvContent(csvText);
+        const nextHash = sha256(normalized);
+        const nextLaptops = parseRowsToLaptops(rows, { datasetId: 'rajshahi_main' });
+        if (nextLaptops.length === 0) {
+          throw new Error('Rajshahi sheet contained no valid laptop rows. Existing inventory was kept unchanged.');
+        }
 
-      if (!resp.ok) {
-        lastSyncError = `Sheet scan returned HTTP ${resp.status}. Ensure the sheet is shared/published publicly.`;
-        return {
-          changed: false,
-          status: getRajshahiSyncStatus(),
-          modelCount: 0,
-          totalUnits: 0,
-          summary: lastSyncError,
-        };
-      }
+        const diff = diffLaptopSnapshots(previousLaptops, nextLaptops);
+        modelCount = nextLaptops.length;
+        totalUnits = diff.nextUnits;
+        branchSummary = summarizeRajshahiBranchUnits(nextLaptops);
 
-      const csvText = await resp.text();
-      if (csvText.trim().startsWith('<!DOCTYPE html') || csvText.trim().startsWith('<html')) {
-        lastSyncError = 'Google returned an HTML sign-in page. Publish or share the Rajshahi sheet publicly.';
-        return {
-          changed: false,
-          status: getRajshahiSyncStatus(),
-          modelCount: 0,
-          totalUnits: 0,
-          summary: lastSyncError,
-        };
-      }
+        if (getAppSetting('rajshahi_last_sync_hash', '') === nextHash && previousLaptops.length > 0) {
+          summary = `Checked successfully: ${modelCount} models, ${totalUnits} units. No sheet changes detected.`;
+          setAppSetting('rajshahi_last_scan_hash', nextHash);
+        } else if (!diff.hasChanges && previousLaptops.length > 0) {
+          setAppSetting('rajshahi_last_sync_hash', nextHash);
+          summary = `Checked successfully: ${modelCount} models, ${totalUnits} units. No stock or specification changes detected.`;
+        } else {
+          const nowIso = new Date().toISOString();
+          const previousActiveKeys = new Set(
+            getAllRefillAlerts()
+              .filter((alert) => alert.status === 'active')
+              .map((alert) => `${alert.brand}|${alert.model}|${alert.variant}|${alert.exhaustedBranch}`.toLowerCase())
+          );
 
-      const normalized = normalizeCsvContent(csvText);
-      const nextHash = sha256(normalized);
-      const prevHash = getAppSetting('rajshahi_last_sync_hash', '');
-      const prevLaptops = getLaptopsByDataset('rajshahi_main');
+          db.transaction(() => {
+            db.prepare('DELETE FROM laptops WHERE dataset_id = ?').run('rajshahi_main');
+            insertLaptopsBatch(nextLaptops);
+            db.prepare(
+              'UPDATE datasets SET source_url = ?, model_count = ?, total_units = ?, imported_at = ? WHERE id = ?'
+            ).run(sheetUrl, nextLaptops.length, totalUnits, nowIso, 'rajshahi_main');
 
-      if (prevHash && prevHash === nextHash && prevLaptops.length > 0) {
-        lastSyncError = null;
-        const totalUnits = prevLaptops.reduce((sum, l) => sum + l.qty, 0);
-        return {
-          changed: false,
-          status: getRajshahiSyncStatus(),
-          modelCount: prevLaptops.length,
-          totalUnits,
-          summary: 'Up to date (no changes)',
-        };
-      }
-
-      const nextLaptops = parseRowsToLaptops(parseDelimitedRows(csvText), { datasetId: 'rajshahi_main' });
-      if (nextLaptops.length === 0) {
-        lastSyncError = 'Scanned sheet had 0 valid laptop rows; existing Rajshahi stock kept safe.';
-        return {
-          changed: false,
-          status: getRajshahiSyncStatus(),
-          modelCount: prevLaptops.length,
-          totalUnits: prevLaptops.reduce((sum, l) => sum + l.qty, 0),
-          summary: lastSyncError,
-        };
-      }
-
-      const diff = diffLaptopSnapshots(prevLaptops, nextLaptops);
-      const nowIso = new Date().toISOString();
-      const totalUnits = diff.nextUnits;
-      const summary = diff.hasChanges ? diff.summary : `Synced ${nextLaptops.length} models (${totalUnits} units)`;
-
-      if (!diff.hasChanges && prevLaptops.length > 0) {
-        setAppSetting('rajshahi_last_sync_hash', nextHash);
-        lastSyncError = null;
-        return {
-          changed: false,
-          status: getRajshahiSyncStatus(),
-          modelCount: nextLaptops.length,
-          totalUnits,
-          summary: 'Up to date (no changes)',
-        };
-      }
-
-      const prevActiveKeys = new Set(
-        getAllRefillAlerts()
-          .filter((a) => a.status === 'active')
-          .map((a) => `${a.brand}|${a.model}|${a.variant}|${a.exhaustedBranch}`.toLowerCase())
-      );
-
-      db.transaction(() => {
-        db.prepare('DELETE FROM laptops WHERE dataset_id = ?').run('rajshahi_main');
-        insertLaptopsBatch(nextLaptops);
-        db.prepare(
-          'UPDATE datasets SET source_url = ?, model_count = ?, total_units = ?, imported_at = ? WHERE id = ?'
-        ).run(sheetUrl, nextLaptops.length, totalUnits, nowIso, 'rajshahi_main');
-
-        // Reconcile active refill alerts cleanly with the synced sheet
-        db.prepare("UPDATE refill_alerts SET status = 'resolved', resolved_at = ?, resolved_by = 'System (Sheet Synced)' WHERE status = 'active'").run(
-          nowIso
-        );
-        const recipients = getNotificationRecipients();
-        const insertNotif = db.prepare(`
-          INSERT INTO notifications (recipient_user_id, type, title, message, branch, laptop_model, created_at)
-          VALUES (?, 'refill_alert', ?, ?, ?, ?, ?)
-        `);
-
-        for (const laptop of nextLaptops) {
-          const triggers = syncRefillAlertsForLaptop(laptop, nowIso);
-          if (triggers.length > 0 && isRefillNotificationsEnabled()) {
-            for (const trig of triggers) {
-              const key = `${laptop.brand}|${laptop.model}|${laptop.variant}|${trig.exhaustedBranch}`.toLowerCase();
-              if (prevActiveKeys.has(key)) continue;
-              for (const uid of recipients) {
-                insertNotif.run(
-                  uid,
-                  `Refill Reminder: ${laptop.brand} ${laptop.model}`,
-                  `${trig.exhaustedBranch} branch is out of stock (0 units) while other branches hold ${trig.otherBranchesQty} units.`,
-                  trig.exhaustedBranch,
-                  `${laptop.brand} ${laptop.model}`,
-                  nowIso
-                );
+            db.prepare("UPDATE refill_alerts SET status = 'resolved', resolved_at = ?, resolved_by = 'System (Sheet Synced)' WHERE status = 'active'")
+              .run(nowIso);
+            const recipients = getNotificationRecipients();
+            const insertNotification = db.prepare(`
+              INSERT INTO notifications (recipient_user_id, type, title, message, branch, laptop_model, created_at)
+              VALUES (?, 'refill_alert', ?, ?, ?, ?, ?)
+            `);
+            for (const laptop of nextLaptops) {
+              const triggers = syncRefillAlertsForLaptop(laptop, nowIso);
+              if (triggers.length > 0 && isRefillNotificationsEnabled()) {
+                for (const trigger of triggers) {
+                  const key = `${laptop.brand}|${laptop.model}|${laptop.variant}|${trigger.exhaustedBranch}`.toLowerCase();
+                  if (previousActiveKeys.has(key)) continue;
+                  for (const userId of recipients) {
+                    insertNotification.run(
+                      userId,
+                      `Refill Reminder: ${laptop.brand} ${laptop.model}`,
+                      `${trigger.exhaustedBranch} branch is out of stock (0 units) while other branches hold ${trigger.otherBranchesQty} units.`,
+                      trigger.exhaustedBranch,
+                      `${laptop.brand} ${laptop.model}`,
+                      nowIso
+                    );
+                  }
+                }
               }
             }
-          }
+          })();
+
+          changed = true;
+          summary = diff.hasChanges
+            ? diff.summary
+            : `Loaded ${nextLaptops.length} Rajshahi models (${totalUnits} units).`;
+          setAppSetting('rajshahi_last_sync_hash', nextHash);
+          setAppSetting('rajshahi_last_sync_at', nowIso);
+          setAppSetting('rajshahi_last_change_summary', summary);
+          logAudit(
+            actorName || 'Live Sheet Scanner',
+            actorName ? 'staff' : 'super_admin',
+            'SYNC_RAJSHAHI_SHEET',
+            'dataset',
+            'rajshahi_main',
+            summary
+          );
+          broadcastRealtimeEvent('inventory_updated', { reason: 'rajshahi_sheet_sync', summary });
         }
-      })();
 
-      setAppSetting('rajshahi_last_sync_hash', nextHash);
-      setAppSetting('rajshahi_last_sync_at', nowIso);
-      setAppSetting('rajshahi_last_change_summary', summary);
-      lastSyncError = null;
-
-      logAudit(
-        actorName || 'Live Sheet Scanner',
-        actorName ? 'staff' : 'super_admin',
-        'SYNC_RAJSHAHI_SHEET',
-        'dataset',
-        'rajshahi_main',
-        summary
-      );
-
-      broadcastRealtimeEvent('inventory_updated', {
-        reason: 'rajshahi_sheet_sync',
-        summary,
-      });
-
-      return {
-        changed: true,
-        status: getRajshahiSyncStatus(),
-        modelCount: nextLaptops.length,
-        totalUnits,
-        summary,
-      };
-    } catch (err) {
-      lastScanAt = new Date().toISOString();
-      lastSyncError = (err as Error).message || 'Failed to fetch Rajshahi Google Sheet';
-      return {
-        changed: false,
-        status: getRajshahiSyncStatus(),
-        modelCount: 0,
-        totalUnits: 0,
-        summary: lastSyncError,
-      };
+        // A successful unchanged scan is still a successful sync check.
+        setAppSetting('rajshahi_last_sync_at', new Date().toISOString());
+        setAppSetting('rajshahi_last_scan_hash', nextHash);
+        if (!changed) setAppSetting('rajshahi_last_change_summary', summary);
+      }
+    } catch (error) {
+      scanError = error instanceof Error ? error.message : 'Failed to fetch Rajshahi Google Sheet.';
+      summary = scanError;
+      // Deliberately do not replace existing stock on fetch, permission, header or parse failures.
     } finally {
+      const completedAt = new Date().toISOString();
       isScanningRajshahi = false;
-      inFlightRajshahiSync = null;
+      lastScanAt = completedAt;
+      lastSyncError = scanError;
+      try {
+        setAppSetting('rajshahi_last_scan_at', completedAt);
+        setAppSetting('rajshahi_last_scan_error', scanError || '');
+        setAppSetting('rajshahi_last_scan_summary', summary);
+        setAppSetting('rajshahi_last_scan_models', String(modelCount));
+        setAppSetting('rajshahi_last_scan_units', String(totalUnits));
+        if (branchSummary) setAppSetting('rajshahi_last_scan_branches', branchSummary);
+      } catch (persistError) {
+        console.error('Could not persist Rajshahi scan status:', persistError);
+      }
+      broadcastRealtimeEvent('sync_status_updated', { reason: 'rajshahi_scan_completed', summary }, false);
     }
+
+    return { changed, status: getRajshahiSyncStatus(), modelCount, totalUnits, summary };
   })();
 
+  inFlightRajshahiSync = task.finally(() => {
+    inFlightRajshahiSync = null;
+  });
   return inFlightRajshahiSync;
 }
 
-function scheduleNextRajshahiScan(): void {
+async function scheduleNextRajshahiScan(): Promise<void> {
   if (rajshahiScanTimer) {
     clearTimeout(rajshahiScanTimer);
     rajshahiScanTimer = null;
   }
   const status = getRajshahiSyncStatus();
-  if (!status.autoScanEnabled || !status.sheetUrl) return;
-
-  // Cloudflare Workers can be suspended between requests, so use a Durable
-  // Object alarm instead of an in-memory timer for the hosted edition.
   const scheduleCloudflareAlarm = (globalThis as any).__KG_SCHEDULE_ALARM__ as ((delayMs: number) => Promise<void> | void) | undefined;
-  const delayMs = status.intervalSeconds * 1000;
-  if (scheduleCloudflareAlarm) {
-    void scheduleCloudflareAlarm(delayMs);
+  const deleteCloudflareAlarm = (globalThis as any).__KG_DELETE_ALARM__ as (() => Promise<void> | void) | undefined;
+
+  if (!status.autoScanEnabled || !status.sheetUrl) {
+    setAppSetting('rajshahi_next_scan_at', '');
+    if (deleteCloudflareAlarm) {
+      try {
+        await deleteCloudflareAlarm();
+      } catch (error) {
+        console.error('Could not clear Rajshahi scan alarm:', error);
+      }
+    }
     return;
+  }
+
+  const delayMs = Math.max(15_000, status.intervalSeconds * 1000);
+  const nextAt = new Date(Date.now() + delayMs).toISOString();
+  setAppSetting('rajshahi_next_scan_at', nextAt);
+  if (scheduleCloudflareAlarm) {
+    try {
+      // Await Durable Object storage so the alarm is persisted before the
+      // current Worker request/alarm event is allowed to finish.
+      await scheduleCloudflareAlarm(delayMs);
+      return;
+    } catch (error) {
+      lastSyncError = `Could not schedule next background scan: ${error instanceof Error ? error.message : String(error)}`;
+      setAppSetting('rajshahi_last_scan_error', lastSyncError);
+      console.error('Could not schedule Rajshahi Durable Object alarm:', error);
+      broadcastRealtimeEvent('sync_status_updated', { reason: 'rajshahi_alarm_schedule_failed' }, false);
+      // Make one slower retry rather than silently abandoning continuous scan.
+      try {
+        await scheduleCloudflareAlarm(60_000);
+        setAppSetting('rajshahi_next_scan_at', new Date(Date.now() + 60_000).toISOString());
+      } catch (retryError) {
+        console.error('Rajshahi alarm retry failed:', retryError);
+      }
+      return;
+    }
   }
 
   rajshahiScanTimer = setTimeout(async () => {
     try {
       const current = getRajshahiSyncStatus();
-      if (current.autoScanEnabled && current.sheetUrl) {
-        await syncRajshahiSheetNow();
-      }
-    } catch {
-      // Keep scheduler alive across transient network errors
+      if (current.autoScanEnabled && current.sheetUrl) await syncRajshahiSheetNow();
+    } catch (error) {
+      console.error('Rajshahi background scan failed:', error);
     } finally {
-      scheduleNextRajshahiScan();
+      await scheduleNextRajshahiScan();
     }
   }, delayMs);
   rajshahiScanTimer.unref?.();
@@ -653,11 +699,9 @@ function scheduleNextRajshahiScan(): void {
 export async function runScheduledRajshahiSync(): Promise<void> {
   try {
     const status = getRajshahiSyncStatus();
-    if (status.autoScanEnabled && status.sheetUrl) {
-      await syncRajshahiSheetNow();
-    }
+    if (status.autoScanEnabled && status.sheetUrl) await syncRajshahiSheetNow();
   } finally {
-    scheduleNextRajshahiScan();
+    await scheduleNextRajshahiScan();
   }
 }
 
@@ -1039,9 +1083,14 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
       nextSheetId = req.body.preferredSheetId === null ? null : Number(req.body.preferredSheetId);
     }
 
-    db.prepare('UPDATE users SET preferences_json = ?, preferred_sheet_id = ? WHERE id = ?').run(
+    const receiveNotifications = req.body?.receiveNotifications !== undefined
+      ? (req.body.receiveNotifications ? 1 : 0)
+      : (user.receiveNotifications ? 1 : 0);
+
+    db.prepare('UPDATE users SET preferences_json = ?, preferred_sheet_id = ?, receive_notifications = ? WHERE id = ?').run(
       JSON.stringify(nextPrefs),
       nextSheetId,
+      receiveNotifications,
       user.id
     );
 
@@ -1063,7 +1112,7 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     const role = String(req.body?.role || 'staff') as UserRole;
     const rawBranch = String(req.body?.assignedBranch || 'ALL') as BranchCode | 'ALL';
     const assignedBranch: BranchCode | 'ALL' = role === 'staff' ? 'ALL' : rawBranch;
-    const receiveNotifications = Boolean(req.body?.receiveNotifications);
+    const receiveNotifications = req.body?.receiveNotifications === undefined ? true : Boolean(req.body.receiveNotifications);
 
     if (!['super_admin', 'admin', 'staff'].includes(role)) {
       res.status(400).json({ error: 'Invalid role' });
@@ -1099,7 +1148,7 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
         hashPassword(password),
         role,
         assignedBranch,
-        actor.role === 'super_admin' && receiveNotifications ? 1 : 0,
+        receiveNotifications ? 1 : 0,
         firstSheet?.id ?? null,
         JSON.stringify(DEFAULT_USER_PREFERENCES),
         new Date().toISOString()
@@ -1306,18 +1355,18 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     }
 
     if (intervalRaw !== undefined && Number.isFinite(intervalRaw)) {
-      const clamped = Math.min(120, Math.max(5, Math.round(intervalRaw)));
+      const clamped = Math.min(300, Math.max(15, Math.round(intervalRaw)));
       setAppSetting('rajshahi_scan_interval_sec', String(clamped));
     }
 
-    scheduleNextRajshahiScan();
+    await scheduleNextRajshahiScan();
     logAudit(
       req.user!.fullName,
       req.user!.role,
       'CONFIGURE_RAJSHAHI_SYNC',
       'app_setting',
       'rajshahi_live_sheet',
-      `URL=${getConfiguredRajshahiSheetUrl() ? 'set' : 'cleared'}, autoScan=${getAppSetting('rajshahi_auto_scan_enabled', '1')}, interval=${getAppSetting('rajshahi_scan_interval_sec', '10')}s`
+      `URL=${getConfiguredRajshahiSheetUrl() ? 'set' : 'cleared'}, autoScan=${getAppSetting('rajshahi_auto_scan_enabled', '1')}, interval=${getAppSetting('rajshahi_scan_interval_sec', '30')}s`
     );
     broadcastRealtimeEvent('sync_status_updated', { reason: 'rajshahi_sync_configured' });
 
@@ -2172,7 +2221,7 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     res.json({ enabled });
   });
 
-  app.get('/api/notifications', requireAuth, requireRole('super_admin', 'admin'), (req: AuthedRequest, res) => {
+  app.get('/api/notifications', requireAuth, (req: AuthedRequest, res) => {
     const rows = db
       .prepare('SELECT * FROM notifications WHERE recipient_user_id = ? ORDER BY id DESC LIMIT 100')
       .all(req.user!.id) as Record<string, unknown>[];
@@ -2194,7 +2243,7 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     res.json({ notifications, unreadCount });
   });
 
-  app.post('/api/notifications/:id/read', requireAuth, requireRole('super_admin', 'admin'), (req: AuthedRequest, res) => {
+  app.post('/api/notifications/:id/read', requireAuth, (req: AuthedRequest, res) => {
     db.prepare('UPDATE notifications SET is_read = 1 WHERE id = ? AND recipient_user_id = ?').run(
       Number(req.params.id),
       req.user!.id
@@ -2202,7 +2251,7 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     res.json({ ok: true });
   });
 
-  app.post('/api/notifications/read-all', requireAuth, requireRole('super_admin', 'admin'), (req: AuthedRequest, res) => {
+  app.post('/api/notifications/read-all', requireAuth, (req: AuthedRequest, res) => {
     db.prepare('UPDATE notifications SET is_read = 1 WHERE recipient_user_id = ?').run(req.user!.id);
     res.json({ ok: true });
   });
@@ -2427,10 +2476,13 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     console.error('Initial Cloudflare backup skipped:', error);
   }
 
-  app.listen(PORT, () => {
-    console.log(`Khan Gadget | KG Live Sell API ready on Cloudflare (port ${PORT})`);
-    scheduleNextRajshahiScan();
+  const nodeServer = app.listen(PORT);
+  await new Promise<void>((resolve, reject) => {
+    nodeServer.once('listening', () => resolve());
+    nodeServer.once('error', reject);
   });
+  console.log(`Khan Gadget | KG Live Sell API ready on Cloudflare (port ${PORT})`);
+  await scheduleNextRajshahiScan();
 
   return httpServerHandler({ port: PORT });
 

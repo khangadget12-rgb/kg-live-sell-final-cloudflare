@@ -304,8 +304,12 @@ export const StockSheetView: React.FC<StockSheetViewProps> = ({
                   : 'Paused (manual refresh only)'}
                 {rajshahiSyncStatus.lastScanAt &&
                   ` · Last checked ${new Date(rajshahiSyncStatus.lastScanAt).toLocaleTimeString()}`}
-                {rajshahiSyncStatus.lastChangeSummary &&
-                  ` · ${rajshahiSyncStatus.lastChangeSummary}`}
+                {rajshahiSyncStatus.lastScanSummary &&
+                  ` · ${rajshahiSyncStatus.lastScanSummary}`}
+                {rajshahiSyncStatus.lastScanBranchSummary &&
+                  ` · ${rajshahiSyncStatus.lastScanBranchSummary}`}
+                {rajshahiSyncStatus.nextScanAt && rajshahiSyncStatus.autoScanEnabled &&
+                  ` · Next scan ${new Date(rajshahiSyncStatus.nextScanAt).toLocaleTimeString()}`}
               </span>
             ) : (
               <span>

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, setAuthToken, subscribeRealtimeEvents } from './services/api';
-import { playNotificationSound, triggerBrowserNotification } from './services/soundAndPwa';
+import { enableNotificationAudio, playNotificationSound, triggerBrowserNotification } from './services/soundAndPwa';
 import type {
   AccessoryRecord,
   AppTab,
@@ -41,7 +41,8 @@ export default function App() {
   const [rajshahiSyncStatus, setRajshahiSyncStatus] = useState<RajshahiSyncStatus | null>(null);
   const [syncPulseVersion, setSyncPulseVersion] = useState(0);
 
-  const prevUnreadRef = useRef<number | null>(null);
+  const latestNotificationIdRef = useRef<number | null>(null);
+  const notificationPollRef = useRef<(() => void) | null>(null);
   const syncVersionRef = useRef<number | null>(null);
   const syncReloadInFlightRef = useRef(false);
 
@@ -78,16 +79,13 @@ export default function App() {
       setRajshahiSyncStatus(syncRes.status);
     }
 
-    if (currentUser.role !== 'staff') {
-      const notifRes = await api.listNotifications();
-      setNotifications(notifRes.notifications);
-      setUnreadCount(notifRes.unreadCount);
-      prevUnreadRef.current = notifRes.unreadCount;
-    } else {
-      setNotifications([]);
-      setUnreadCount(0);
-      prevUnreadRef.current = 0;
-    }
+    // Every role can read only its own notification inbox. Establish a baseline
+    // once per login so pre-existing unread alerts are not replayed as new.
+    const notifRes = await api.listNotifications();
+    setNotifications(notifRes.notifications);
+    setUnreadCount(notifRes.unreadCount);
+    const latestId = notifRes.notifications.reduce((max, item) => Math.max(max, item.id), 0);
+    if (latestNotificationIdRef.current === null) latestNotificationIdRef.current = latestId;
   }, []);
 
   const reloadAfterSync = useCallback(async (currentUser: UserAccount) => {
@@ -124,28 +122,60 @@ export default function App() {
     };
   }, [loadOperationalData]);
 
-  // Poll notifications for Admin / Super Admin and play chime + browser alert on new unread notifications
+  // Poll the signed-in user's own inbox. Compare notification IDs (not unread
+  // counts) so a newly inserted notification is never missed when another one
+  // is read at the same time. Foreground polling is intentionally lightweight.
   useEffect(() => {
-    if (!user || user.role === 'staff') return;
-    const interval = window.setInterval(async () => {
+    if (!user) return;
+    let stopped = false;
+    let checking = false;
+    const pollNotifications = async () => {
+      if (stopped || checking) return;
+      checking = true;
       try {
         const res = await api.listNotifications();
+        if (stopped) return;
         setNotifications(res.notifications);
         setUnreadCount(res.unreadCount);
-
-        if (prevUnreadRef.current !== null && res.unreadCount > prevUnreadRef.current) {
-          playNotificationSound(user.preferences.soundEnabled);
-          const latest = res.notifications.find((n) => !n.isRead);
-          if (latest) {
-            triggerBrowserNotification(latest.title, latest.message);
+        const highestId = res.notifications.reduce((max, item) => Math.max(max, item.id), 0);
+        const previousId = latestNotificationIdRef.current;
+        if (previousId !== null && highestId > previousId && user.receiveNotifications) {
+          const newItems = res.notifications
+            .filter((item) => item.id > previousId)
+            .sort((a, b) => a.id - b.id);
+          if (newItems.length > 0) {
+            playNotificationSound(user.preferences.soundEnabled);
+            for (const item of newItems.slice(-3)) {
+              await triggerBrowserNotification(item.title, item.message, `kg-live-sell-notification-${item.id}`);
+            }
           }
         }
-        prevUnreadRef.current = res.unreadCount;
+        latestNotificationIdRef.current = Math.max(previousId ?? 0, highestId);
       } catch {
-        // Ignore transient poll errors
+        // Retry automatically on the next tick; preserve the last good inbox.
+      } finally {
+        checking = false;
       }
-    }, 15000);
-    return () => window.clearInterval(interval);
+    };
+    const pollNow = () => { void pollNotifications(); };
+    notificationPollRef.current = pollNow;
+    pollNow();
+    // SSE delivers immediate hints when a sale or stock update creates alerts.
+    // A 15-second poll remains as a recovery path if the stream disconnects.
+    // Browser timers may be throttled in background tabs; true alerts after the
+    // app is fully closed require a Web Push subscription, not page polling.
+    const interval = window.setInterval(pollNow, 15000);
+    const onVisibilityChange = () => { if (!document.hidden) pollNow(); };
+    const onFocus = () => pollNow();
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      stopped = true;
+      if (notificationPollRef.current === pollNow) notificationPollRef.current = null;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [user]);
 
   // Five-second low-cost sync-version poll. Full data is reloaded only when
@@ -179,7 +209,7 @@ export default function App() {
     };
 
     void checkSyncVersion();
-    const interval = window.setInterval(() => void checkSyncVersion(), 5000);
+    const interval = window.setInterval(() => void checkSyncVersion(), 15000);
     const onVisibilityChange = () => {
       if (!document.hidden) void checkSyncVersion();
     };
@@ -190,6 +220,35 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [user, reloadAfterSync]);
+
+  // Poll the persisted Rajshahi scanner heartbeat as a fallback when an SSE
+  // connection is interrupted or the Settings screen is not open.
+  useEffect(() => {
+    if (!user) return;
+    let stopped = false;
+    let checking = false;
+    const refreshStatus = async () => {
+      if (stopped || checking || document.hidden) return;
+      checking = true;
+      try {
+        const result = await api.getRajshahiSyncStatus();
+        if (!stopped) setRajshahiSyncStatus(result.status);
+      } catch {
+        // Keep the last known scanner status and retry next time.
+      } finally {
+        checking = false;
+      }
+    };
+    void refreshStatus();
+    const timer = window.setInterval(() => void refreshStatus(), 15000);
+    const onVisibility = () => { if (!document.hidden) void refreshStatus(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [user?.id]);
 
   // Track active session duration across all authenticated roles (including Staff)
   useEffect(() => {
@@ -215,6 +274,7 @@ export default function App() {
     const unsubscribe = subscribeRealtimeEvents((evt) => {
       syncVersionRef.current = evt.syncVersion;
       if (evt.type === 'inventory_updated' || evt.type === 'datasets_updated') {
+        notificationPollRef.current?.();
         reloadAfterSync(user).catch(() => {});
         setSyncPulseVersion((v) => v + 1);
       } else if (evt.type === 'sync_status_updated') {
@@ -245,7 +305,7 @@ export default function App() {
     setSales([]);
     setNotifications([]);
     setUnreadCount(0);
-    prevUnreadRef.current = null;
+    latestNotificationIdRef.current = null;
   };
 
   const handleRefreshAll = async () => {
@@ -255,14 +315,7 @@ export default function App() {
 
   const handleSaleCompleted = async () => {
     if (!user) return;
-    const prevUnread = prevUnreadRef.current ?? 0;
     await loadOperationalData(user);
-    if (user.role !== 'staff') {
-      const notifRes = await api.listNotifications();
-      if (notifRes.unreadCount > prevUnread) {
-        playNotificationSound(user.preferences.soundEnabled);
-      }
-    }
   };
 
   const handleMarkNotificationRead = async (id: number) => {
@@ -270,7 +323,6 @@ export default function App() {
     const notifRes = await api.listNotifications();
     setNotifications(notifRes.notifications);
     setUnreadCount(notifRes.unreadCount);
-    prevUnreadRef.current = notifRes.unreadCount;
   };
 
   const handleMarkAllRead = async () => {
@@ -278,13 +330,20 @@ export default function App() {
     const notifRes = await api.listNotifications();
     setNotifications(notifRes.notifications);
     setUnreadCount(notifRes.unreadCount);
-    prevUnreadRef.current = notifRes.unreadCount;
   };
 
   const handleToggleSound = async () => {
     if (!user) return;
-    const nextPrefs = { ...user.preferences, soundEnabled: !user.preferences.soundEnabled };
+    const nextEnabled = !user.preferences.soundEnabled;
+    if (nextEnabled) void enableNotificationAudio();
+    const nextPrefs = { ...user.preferences, soundEnabled: nextEnabled };
     const res = await api.updateMyPreferences({ preferences: nextPrefs });
+    setUser(res.user);
+  };
+
+  const handleToggleNotificationPreference = async () => {
+    if (!user) return;
+    const res = await api.updateMyPreferences({ receiveNotifications: !user.receiveNotifications });
     setUser(res.user);
   };
 
@@ -316,6 +375,7 @@ export default function App() {
       onMarkRead={handleMarkNotificationRead}
       onMarkAllRead={handleMarkAllRead}
       onToggleSound={handleToggleSound}
+      onToggleNotificationPreference={handleToggleNotificationPreference}
     >
       {effectiveTab === 'dashboard' && (
         <DashboardView

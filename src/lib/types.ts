@@ -283,6 +283,11 @@ export interface RajshahiSyncStatus {
   lastSyncedAt: string | null;
   lastChangeSummary: string | null;
   lastError: string | null;
+  lastScanSummary?: string | null;
+  nextScanAt?: string | null;
+  lastScanModelCount?: number;
+  lastScanTotalUnits?: number;
+  lastScanBranchSummary?: string | null;
   syncVersion: number;
 }
 

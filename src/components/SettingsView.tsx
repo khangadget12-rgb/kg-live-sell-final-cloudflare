@@ -78,7 +78,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   // Rajshahi Live Sheet Auto-Scanner State
   const [liveSheetUrl, setLiveSheetUrl] = useState(rajshahiSyncStatus?.sheetUrl || '');
   const [autoScanEnabled, setAutoScanEnabled] = useState(rajshahiSyncStatus?.autoScanEnabled ?? true);
-  const [scanIntervalSec, setScanIntervalSec] = useState(rajshahiSyncStatus?.intervalSeconds ?? 10);
+  const [scanIntervalSec, setScanIntervalSec] = useState(rajshahiSyncStatus?.intervalSeconds ?? 30);
   const [syncConfigSaving, setSyncConfigSaving] = useState(false);
   const [syncScanRunning, setSyncScanRunning] = useState(false);
   const [syncConfigMsg, setSyncConfigMsg] = useState('');
@@ -117,6 +117,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setScanIntervalSec(rajshahiSyncStatus.intervalSeconds);
     }
   }, [rajshahiSyncStatus?.sheetUrl, rajshahiSyncStatus?.autoScanEnabled, rajshahiSyncStatus?.intervalSeconds]);
+
+  // Keep the live-scanner panel current even if no inventory change occurs.
+  useEffect(() => {
+    let stopped = false;
+    let checking = false;
+    const refreshScannerStatus = async () => {
+      if (stopped || checking || document.hidden) return;
+      checking = true;
+      try {
+        const result = await api.getRajshahiSyncStatus();
+        if (!stopped) onSyncStatusUpdated?.(result.status);
+      } catch {
+        // The main app retains the last known good status on transient failures.
+      } finally {
+        checking = false;
+      }
+    };
+    void refreshScannerStatus();
+    const timer = window.setInterval(() => void refreshScannerStatus(), 12000);
+    const onVisibility = () => { if (!document.hidden) void refreshScannerStatus(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [onSyncStatusUpdated]);
 
   const loadSessionLogs = async (roleFilterVal = sessionRoleFilter) => {
     if (user.role === 'staff') return;
@@ -558,7 +585,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div>
               <h3 className="font-display font-bold text-base">Rajshahi Live Sheet Auto-Scanner &amp; Directory</h3>
               <p className="text-xs text-slate-500">
-                Continuously scans your public Rajshahi Google Sheet for number or model edits and updates every connected screen instantly
+Checks your public Rajshahi sheet in the background, validates all four branch stock columns, and updates every connected screen when a real change is detected.
               </p>
             </div>
           </div>
@@ -601,11 +628,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     onChange={(e) => setScanIntervalSec(Number(e.target.value))}
                     className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
                   >
-                    <option value={5}>Every 5s</option>
-                    <option value={10}>Every 10s</option>
                     <option value={15}>Every 15s</option>
-                    <option value={30}>Every 30s</option>
+                    <option value={30}>Every 30s (recommended)</option>
                     <option value={60}>Every 60s</option>
+                    <option value={120}>Every 2 minutes</option>
                   </select>
                 </div>
                 <div className="lg:col-span-2 flex items-center gap-2 py-2">
@@ -652,16 +678,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )}
 
           <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
-            <span>
-              {rajshahiSyncStatus?.lastScanAt
-                ? `Last scanned: ${new Date(rajshahiSyncStatus.lastScanAt).toLocaleString()}`
-                : 'Waiting for first scan'}
-              {rajshahiSyncStatus?.lastSyncedAt &&
-                ` · Last sheet update: ${new Date(rajshahiSyncStatus.lastSyncedAt).toLocaleString()}`}
-              {rajshahiSyncStatus?.lastChangeSummary && ` · ${rajshahiSyncStatus.lastChangeSummary}`}
+            <span className="min-w-0">
+              {rajshahiSyncStatus?.scanning
+                ? 'Scanning Rajshahi sheet now…'
+                : rajshahiSyncStatus?.autoScanEnabled && rajshahiSyncStatus.sheetUrl
+                  ? 'Background scanner scheduled on Cloudflare (does not depend on this page being open)'
+                  : 'Scanner paused'}
+              {rajshahiSyncStatus?.lastScanAt && ` · Last check: ${new Date(rajshahiSyncStatus.lastScanAt).toLocaleString()}`}
+              {rajshahiSyncStatus?.nextScanAt && rajshahiSyncStatus.autoScanEnabled && ` · Next check: ${new Date(rajshahiSyncStatus.nextScanAt).toLocaleTimeString()}`}
+              {rajshahiSyncStatus?.lastScanSummary && ` · ${rajshahiSyncStatus.lastScanSummary}`}
+              {rajshahiSyncStatus?.lastScanModelCount !== undefined && ` · ${rajshahiSyncStatus.lastScanModelCount} models / ${rajshahiSyncStatus.lastScanTotalUnits ?? 0} units`}
+              {rajshahiSyncStatus?.lastScanBranchSummary && ` · Branch stock: ${rajshahiSyncStatus.lastScanBranchSummary}`}
             </span>
             {syncConfigMsg && <span className="text-teal-700 dark:text-teal-400 font-semibold">{syncConfigMsg}</span>}
-            {syncConfigErr && <span className="text-red-600 dark:text-red-400 font-semibold">{syncConfigErr}</span>}
+            {(syncConfigErr || rajshahiSyncStatus?.lastError) && <span className="text-red-600 dark:text-red-400 font-semibold">{syncConfigErr || rajshahiSyncStatus?.lastError}</span>}
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+            Cloudflare scans in the background on the selected interval. Google can still take a few minutes to republish a changed Sheet. In Google Sheets, open File → Share → Publish to web → Published content &amp; settings and keep “Automatically republish when changes are made” enabled. Use a published /d/e/.../pubhtml link or a normal /d/.../edit link; both are supported.
+          </p>
           </div>
         </div>
 
