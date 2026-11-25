@@ -177,7 +177,6 @@ export interface SaleRecord {
   lookingPct: string;
   customerName: string;
   customerPhone: string;
-  customerLocation: string;
   remarks: string;
   liveSellMessage?: string;
   sheetId: number | null;
