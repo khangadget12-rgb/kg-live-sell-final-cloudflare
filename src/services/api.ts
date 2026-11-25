@@ -83,18 +83,9 @@ async function apiFetch<T>(url: string, init: RequestInit = {}): Promise<T> {
     credentials: 'include',
   });
 
-  const responseText = await res.text();
-  let data: { error?: string } = {};
-  if (responseText) {
-    try {
-      data = JSON.parse(responseText) as { error?: string };
-    } catch {
-      // Preserve a useful message when a proxy or Worker returns plain text.
-      data = { error: responseText.slice(0, 240) };
-    }
-  }
+  const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`);
+    throw new Error((data as { error?: string }).error || `Request failed (${res.status})`);
   }
   return data as T;
 }
@@ -323,8 +314,6 @@ export const api = {
     lookingPct?: string;
     customerName?: string;
     customerPhone?: string;
-    customerLocation?: string;
-    liveSellMessageOverride?: string;
     sourceName?: string;
     dealBy?: string;
     assistBy?: string;
@@ -373,12 +362,6 @@ export const api = {
     apiFetch<{ ok: boolean }>(`/api/sales/${id}/void`, {
       method: 'POST',
       body: JSON.stringify({ reason }),
-    }),
-
-  deleteSale: (id: number) =>
-    apiFetch<{ ok: boolean; inventoryRestored: boolean; invoiceNo?: string }>(`/api/sales/${id}/delete`, {
-      method: 'POST',
-      body: JSON.stringify({ confirm: true }),
     }),
 
   listAccessories: () => apiFetch<{ accessories: AccessoryRecord[] }>('/api/accessories'),

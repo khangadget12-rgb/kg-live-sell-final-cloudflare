@@ -2476,21 +2476,6 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     console.error('Initial Cloudflare backup skipped:', error);
   }
 
-  // Return actionable JSON for unexpected API failures instead of Express's
-  // default HTML 500 page (the client can then display the real server error).
-  // Keep stack traces in Cloudflare Observability, never in the browser.
-  app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
-    const err = error instanceof Error ? error : new Error(String(error));
-    console.error('KG Live Sell API request failed:', {
-      method: req.method,
-      path: req.path,
-      message: err.message,
-      stack: err.stack,
-    });
-    if (res.headersSent) return;
-    res.status(500).json({ error: 'Server error while processing this request. Check Worker logs for the request path and timestamp.' });
-  });
-
   const nodeServer = app.listen(PORT);
   await new Promise<void>((resolve, reject) => {
     nodeServer.once('listening', () => resolve());

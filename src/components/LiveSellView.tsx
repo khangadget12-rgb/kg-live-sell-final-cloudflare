@@ -63,11 +63,7 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
   const [dealTime, setDealTime] = useState('');
   const [adapterNote, setAdapterNote] = useState('');
   const [remarks, setRemarks] = useState('');
-  const [customerLocation, setCustomerLocation] = useState('');
   const [saleTimestamp, setSaleTimestamp] = useState(() => toLocalDatetimeInputValue());
-  const [calibrationOpen, setCalibrationOpen] = useState(false);
-  const [calibrationDraft, setCalibrationDraft] = useState('');
-  const [calibratedLiveSellMessage, setCalibratedLiveSellMessage] = useState('');
 
   const [monthlyCounts, setMonthlyCounts] = useState<MonthlyBranchSalesCounts>({
     RG: 0,
@@ -167,7 +163,6 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
       memoPicStatus,
       dealTime,
       remarks,
-      customerLocation,
       remainingRajshahiQty: nextTotal,
       remainingBranchStock: nextBranchStock,
       monthlyBranchCounts: previewCounts,
@@ -189,19 +184,9 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
     memoPicStatus,
     dealTime,
     remarks,
-    customerLocation,
     user.preferences.currencyFormat,
     clientTimeZone,
   ]);
-
-  // If any composer field changes, discard a previous manual calibration so
-  // the copied message never silently falls out of sync with the current sale.
-  useEffect(() => {
-    setCalibratedLiveSellMessage('');
-    if (calibrationOpen) setCalibrationDraft(livePreviewMessage);
-  }, [livePreviewMessage]);
-
-  const finalLiveSellMessage = calibratedLiveSellMessage || livePreviewMessage;
 
   const handleSelectLaptop = (laptop: LaptopRecord) => {
     setSelectedLaptopId(laptop.id);
@@ -268,8 +253,6 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
         memoPicStatus: memoPicStatus.trim(),
         dealTime: dealTime.trim(),
         remarks: remarks.trim(),
-        customerLocation: customerLocation.trim(),
-        liveSellMessageOverride: calibratedLiveSellMessage || undefined,
         adapterNote: adapterNote.trim(),
         timeZone: clientTimeZone,
         soldAt: saleTimestamp ? new Date(saleTimestamp).toISOString() : undefined,
@@ -299,9 +282,6 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
       setDealTime('');
       setAdapterNote('');
       setRemarks('');
-      setCustomerLocation('');
-      setCalibratedLiveSellMessage('');
-      setCalibrationDraft('');
       setSaleTimestamp(toLocalDatetimeInputValue());
 
       await onSaleCompleted();
@@ -650,20 +630,6 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
             </div>
 
             <div>
-              <label htmlFor="sale-customer-location" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Customer's Location (Optional)
-              </label>
-              <input
-                id="sale-customer-location"
-                type="text"
-                placeholder="Enter customer area / city (leave blank if unknown)"
-                value={customerLocation}
-                onChange={(e) => setCustomerLocation(e.target.value)}
-                className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
-              />
-            </div>
-
-            <div>
               <label htmlFor="sale-remarks" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                 Remarks (Optional)
               </label>
@@ -680,32 +646,20 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
             {livePreviewMessage && (
               <div className="p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
-                      Live Sell Post Preview
-                    </span>
-                    {calibratedLiveSellMessage && <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300">CALIBRATED</span>}
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => { setCalibrationDraft(finalLiveSellMessage); setCalibrationOpen(true); }}
-                      className="text-xs font-semibold text-amber-700 dark:text-amber-300 hover:underline whitespace-nowrap"
-                    >
-                      Calibrate Live Sell
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleCopyText(finalLiveSellMessage)}
+                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                    Live Sell Post Preview
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyText(livePreviewMessage)}
                     className="inline-flex items-center gap-1 text-xs font-semibold text-teal-700 dark:text-teal-400 hover:underline whitespace-nowrap"
                   >
                     {copiedLiveSell ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                      <span>{copiedLiveSell ? 'Copied!' : 'Copy Preview'}</span>
-                    </button>
-                  </div>
+                    <span>{copiedLiveSell ? 'Copied!' : 'Copy Preview'}</span>
+                  </button>
                 </div>
                 <pre className="text-[11px] font-mono leading-relaxed whitespace-pre-wrap text-slate-700 dark:text-slate-300 max-h-64 overflow-y-auto">
-                  {finalLiveSellMessage}
+                  {livePreviewMessage}
                 </pre>
               </div>
             )}
@@ -782,7 +736,6 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
               {sourceName && <div><strong>Source:</strong> {sourceName}</div>}
               {dealBy && <div><strong>Deal:</strong> {dealBy}</div>}
               {assistBy && <div><strong>Assist:</strong> {assistBy}</div>}
-              {customerLocation && <div><strong>Customer Location:</strong> {customerLocation}</div>}
               {dealTime && <div><strong>Deal Time:</strong> {dealTime} Min.</div>}
               {remarks && <div><strong>Remarks:</strong> {remarks}</div>}
             </div>
@@ -805,34 +758,6 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
               >
                 {submitting ? 'Submitting...' : 'Confirm & Copy Live Sell'}
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {calibrationOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 p-4">
-          <div role="dialog" aria-modal="true" aria-label="Calibrate Live Sell message" className="w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h3 className="font-display font-bold text-base">Calibrate Live Sell</h3>
-                <p className="text-xs text-slate-500 mt-1">Adjust the generated post before it is copied and saved with this sale. Changing composer fields resets this calibration.</p>
-              </div>
-              <button type="button" onClick={() => setCalibrationOpen(false)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Close calibration">×</button>
-            </div>
-            <textarea
-              rows={16}
-              value={calibrationDraft}
-              onChange={(e) => setCalibrationDraft(e.target.value)}
-              className="w-full p-3 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-mono leading-relaxed"
-              aria-label="Editable calibrated Live Sell message"
-            />
-            <div className="flex flex-wrap justify-between gap-2">
-              <button type="button" onClick={() => { setCalibrationDraft(livePreviewMessage); setCalibratedLiveSellMessage(''); }} className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-semibold">Reset to Generated</button>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setCalibrationOpen(false)} className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-semibold">Cancel</button>
-                <button type="button" disabled={!calibrationDraft.trim()} onClick={() => { setCalibratedLiveSellMessage(calibrationDraft.trim()); setCalibrationOpen(false); }} className="px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold disabled:opacity-50">Apply Calibration</button>
-              </div>
             </div>
           </div>
         </div>

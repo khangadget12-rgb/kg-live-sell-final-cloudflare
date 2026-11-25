@@ -1,25 +1,13 @@
 import { BRANCH_ORDER, LAPTOP_CATEGORIES } from './types';
 import type { BranchCode, LaptopCategory, LaptopCondition, LaptopRecord } from './types';
 
-export type LaptopSortMode =
-  | 'price_low_to_high'
-  | 'price_high_to_low'
-  | 'stock_high_to_low'
-  | 'stock_low_to_high'
-  | 'ram_high_to_low'
-  | 'storage_high_to_low'
-  | 'brand_a_to_z'
-  | 'newest';
-
 export interface SearchFilterState {
   query: string;
   priceField: 'discounted' | 'asking' | 'border';
   minPrice: number | null;
   maxPrice: number | null;
   ramGb: number | null;
-  minRamGb: number | null;
   minStorageGb: number | null;
-  maxStorageGb: number | null;
   cpuFamily: string | null;
   cpuGen: number | null;
   memoryType: string | null;
@@ -42,9 +30,7 @@ export const EMPTY_FILTERS: SearchFilterState = {
   minPrice: null,
   maxPrice: null,
   ramGb: null,
-  minRamGb: null,
   minStorageGb: null,
-  maxStorageGb: null,
   cpuFamily: null,
   cpuGen: null,
   memoryType: null,
@@ -366,9 +352,7 @@ export function filterLaptops(
     minPrice: state.minPrice ?? (!suppressedKeys.has('minPrice') && !suppressedKeys.has('priceRange') ? nl.parsedFilters.minPrice ?? null : null),
     maxPrice: state.maxPrice ?? (!suppressedKeys.has('maxPrice') && !suppressedKeys.has('priceRange') ? nl.parsedFilters.maxPrice ?? null : null),
     ramGb: state.ramGb ?? (!suppressedKeys.has('ramGb') ? nl.parsedFilters.ramGb ?? null : null),
-    minRamGb: state.minRamGb,
     minStorageGb: state.minStorageGb ?? (!suppressedKeys.has('minStorageGb') ? nl.parsedFilters.minStorageGb ?? null : null),
-    maxStorageGb: state.maxStorageGb,
     cpuFamily: state.cpuFamily ?? (!suppressedKeys.has('cpuFamily') ? nl.parsedFilters.cpuFamily ?? null : null),
     cpuGen: state.cpuGen ?? (!suppressedKeys.has('cpuGen') ? nl.parsedFilters.cpuGen ?? null : null),
     memoryType: state.memoryType ?? (!suppressedKeys.has('memoryType') ? nl.parsedFilters.memoryType ?? null : null),
@@ -399,9 +383,7 @@ export function filterLaptops(
     if (effective.minPrice !== null && (targetPrice <= 0 || targetPrice < effective.minPrice)) return false;
     if (effective.maxPrice !== null && (targetPrice <= 0 || targetPrice > effective.maxPrice)) return false;
     if (effective.ramGb !== null && l.ramGb !== effective.ramGb) return false;
-    if (effective.minRamGb !== null && l.ramGb < effective.minRamGb) return false;
     if (effective.minStorageGb !== null && l.storageGb < effective.minStorageGb) return false;
-    if (effective.maxStorageGb !== null && (l.storageGb <= 0 || l.storageGb > effective.maxStorageGb)) return false;
     if (effective.cpuGen !== null && l.cpuGen !== effective.cpuGen) return false;
 
     if (effective.cpuFamily) {
@@ -451,52 +433,6 @@ export function filterLaptops(
   });
 
   return { items, recognizedTags: activeTags };
-}
-
-export function getLaptopSortPrice(laptop: LaptopRecord, priceField: SearchFilterState['priceField']): number {
-  const raw = priceField === 'asking'
-    ? laptop.askPrice
-    : priceField === 'border'
-      ? laptop.borderPrice
-      : (laptop.disPrice > 0 ? laptop.disPrice : laptop.askPrice);
-  return Number.isFinite(raw) && raw > 0 ? raw : 0;
-}
-
-/** Sorts a filtered result without mutating the original inventory array.
- * Unpriced records remain at the bottom in both price directions.
- */
-export function sortLaptops(
-  laptops: LaptopRecord[],
-  mode: LaptopSortMode,
-  priceField: SearchFilterState['priceField'] = 'discounted'
-): LaptopRecord[] {
-  const rows = [...laptops];
-  if (mode === 'newest') {
-    return rows.sort((a, b) => String(b.entryDate || '').localeCompare(String(a.entryDate || '')));
-  }
-  if (mode === 'brand_a_to_z') {
-    return rows.sort((a, b) => a.brand.localeCompare(b.brand) || a.model.localeCompare(b.model));
-  }
-  if (mode === 'stock_high_to_low') {
-    return rows.sort((a, b) => b.qty - a.qty || a.brand.localeCompare(b.brand) || a.model.localeCompare(b.model));
-  }
-  if (mode === 'stock_low_to_high') {
-    return rows.sort((a, b) => a.qty - b.qty || a.brand.localeCompare(b.brand) || a.model.localeCompare(b.model));
-  }
-  if (mode === 'ram_high_to_low') {
-    return rows.sort((a, b) => b.ramGb - a.ramGb || a.brand.localeCompare(b.brand) || a.model.localeCompare(b.model));
-  }
-  if (mode === 'storage_high_to_low') {
-    return rows.sort((a, b) => b.storageGb - a.storageGb || a.brand.localeCompare(b.brand) || a.model.localeCompare(b.model));
-  }
-  return rows.sort((a, b) => {
-    const pa = getLaptopSortPrice(a, priceField);
-    const pb = getLaptopSortPrice(b, priceField);
-    if (pa === 0 && pb !== 0) return 1;
-    if (pb === 0 && pa !== 0) return -1;
-    if (mode === 'price_high_to_low') return pb - pa || a.brand.localeCompare(b.brand) || a.model.localeCompare(b.model);
-    return pa - pb || a.brand.localeCompare(b.brand) || a.model.localeCompare(b.model);
-  });
 }
 
 export interface CategoryAnalyticsItem {

@@ -360,52 +360,6 @@ export function runMigrations(): void {
     })();
   }
 
-  if (!applied.has(5)) {
-    db.transaction(() => {
-      const salesCols = db.prepare('PRAGMA table_info(sales)').all() as Array<{ name: string }>;
-      if (!salesCols.some((column) => column.name === 'customer_location')) {
-        db.exec("ALTER TABLE sales ADD COLUMN customer_location TEXT NOT NULL DEFAULT ''");
-      }
-      db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
-        5,
-        'sale_customer_location',
-        new Date().toISOString()
-      );
-    })();
-  }
-
-  // Store exported backup snapshots in the same SQLite-backed Durable Object.
-  // Chunking keeps each individual SQL row well below the platform's row-size limit.
-  // Authentication tables are also verified independently of the migration
-  // ledger. This repairs installations where an earlier deployment recorded a
-  // migration but the session-log table was absent (login otherwise fails with
-  // a generic HTTP 500 after credentials have been verified). All statements
-  // are idempotent and preserve existing users and sessions.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      token_hash TEXT PRIMARY KEY,
-      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      expires_at TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS user_session_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      token_hash TEXT NOT NULL UNIQUE,
-      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      username TEXT NOT NULL,
-      full_name TEXT NOT NULL,
-      role TEXT NOT NULL,
-      login_at TEXT NOT NULL,
-      last_seen_at TEXT NOT NULL,
-      logout_at TEXT,
-      active_seconds INTEGER NOT NULL DEFAULT 0,
-      user_agent TEXT NOT NULL DEFAULT '',
-      ip_address TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'ended', 'expired'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_session_logs_user ON user_session_logs(user_id, login_at);
-  `);
-
   // Store exported backup snapshots in the same SQLite-backed Durable Object.
   // Chunking keeps each individual SQL row well below the platform's row-size limit.
   db.exec(`

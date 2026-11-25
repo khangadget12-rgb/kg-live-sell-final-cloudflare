@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Search, Ban, Eye, X, Copy, Check, Trash2 } from 'lucide-react';
+import { Search, Ban, Eye, X, Copy, Check } from 'lucide-react';
 import { BRANCHES } from '../lib/types';
 import type { BranchCode, SaleRecord, UserPreferences, UserRole } from '../lib/types';
 import { formatCurrency } from '../lib/formatters';
@@ -14,7 +14,6 @@ interface SalesLedgerViewProps {
 
 export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRole, preferences, onRefresh }) => {
   const canVoid = userRole !== 'staff';
-  const canDelete = userRole === 'super_admin';
   const [branchFilter, setBranchFilter] = useState<BranchCode | 'ALL'>('ALL');
   const [query, setQuery] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState('');
@@ -25,11 +24,6 @@ export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRol
   const [voidTarget, setVoidTarget] = useState<SaleRecord | null>(null);
   const [voidReason, setVoidReason] = useState('');
   const [voidError, setVoidError] = useState('');
-  const [deleteTarget, setDeleteTarget] = useState<SaleRecord | null>(null);
-  const [deleteAcknowledged, setDeleteAcknowledged] = useState(false);
-  const [deleteError, setDeleteError] = useState('');
-  const [deleteNotice, setDeleteNotice] = useState('');
-  const [deletedSaleIds, setDeletedSaleIds] = useState<Set<number>>(new Set());
   const [submitting, setSubmitting] = useState(false);
 
   const employees = useMemo(
@@ -39,19 +33,19 @@ export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRol
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return sales.filter((s) => !deletedSaleIds.has(s.id)).filter((s) => {
+    return sales.filter((s) => {
       if (branchFilter !== 'ALL' && s.branch !== branchFilter) return false;
       if (employeeFilter && s.employeeName !== employeeFilter) return false;
       const day = s.soldAt.slice(0, 10);
       if (dateFrom && day < dateFrom) return false;
       if (dateTo && day > dateTo) return false;
       if (q) {
-        const hay = `${s.invoiceNo} ${s.brand} ${s.model} ${s.variant} ${s.serialNumber} ${s.customerName} ${s.customerPhone} ${s.customerLocation || ''} ${s.employeeName} ${s.remarks} ${s.sheetName}`.toLowerCase();
+        const hay = `${s.invoiceNo} ${s.brand} ${s.model} ${s.variant} ${s.serialNumber} ${s.customerName} ${s.customerPhone} ${s.employeeName} ${s.remarks} ${s.sheetName}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [sales, deletedSaleIds, branchFilter, employeeFilter, dateFrom, dateTo, query]);
+  }, [sales, branchFilter, employeeFilter, dateFrom, dateTo, query]);
 
   const handleVoidSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,51 +69,8 @@ export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRol
     }
   };
 
-  const handleDeleteSale = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!deleteTarget || !canDelete) return;
-    if (!deleteAcknowledged) {
-      setDeleteError('Confirm that you understand this sale will be permanently removed.');
-      return;
-    }
-    setDeleteError('');
-    setSubmitting(true);
-    try {
-      const deleted = await api.deleteSale(deleteTarget.id);
-      if (!deleted?.ok) throw new Error('The server did not confirm deletion. Please retry.');
-
-      const removedSale = deleteTarget;
-      setDeletedSaleIds((previous) => new Set(previous).add(removedSale.id));
-      setDeleteTarget(null);
-      setDeleteAcknowledged(false);
-      if (selectedSale?.id === removedSale.id) setSelectedSale(null);
-      setDeleteNotice(
-        `${deleted.invoiceNo || removedSale.invoiceNo} was permanently deleted.` +
-        (deleted.inventoryRestored ? ' One unit was returned to stock.' : ' Stock was not changed because the sale was already voided or its laptop record was unavailable.')
-      );
-
-      // A refresh failure must not make a successfully deleted sale look like
-      // a failed delete. The local ledger hides the confirmed deleted row.
-      try {
-        await onRefresh();
-      } catch {
-        setDeleteNotice((message) => `${message} The ledger refresh did not complete; reload the page to verify the latest list.`);
-      }
-    } catch (err) {
-      setDeleteError((err as Error).message || 'Unable to delete this sale.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   return (
     <div className="space-y-6">
-      {deleteNotice && (
-        <div role="status" className="flex items-start justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200">
-          <span>{deleteNotice}</span>
-          <button type="button" onClick={() => setDeleteNotice('')} aria-label="Dismiss deletion message" className="shrink-0 rounded p-0.5 hover:bg-emerald-100 dark:hover:bg-emerald-900/40"><X className="h-3.5 w-3.5" /></button>
-        </div>
-      )}
       {/* Filter Bar */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -271,22 +222,9 @@ export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRol
                               setVoidError('');
                             }}
                             aria-label={`Void ${s.invoiceNo}`}
-                            title="Void sale (Admin / Super Admin)"
                             className="p-1.5 rounded-lg border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30"
                           >
                             <Ban className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                        {canDelete && (
-                          <button
-                            type="button"
-                            onClick={() => { setDeleteTarget(s); setDeleteAcknowledged(false); setDeleteError(''); }}
-                            aria-label={`Permanently delete ${s.invoiceNo}`}
-                            title="Permanently delete sale (Super Admin only)"
-                            className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg border border-rose-300 dark:border-rose-900 text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/30"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span className="text-[11px] font-semibold">Delete</span>
                           </button>
                         )}
                       </div>
@@ -323,7 +261,6 @@ export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRol
               <div><dt className="text-slate-500">Looking %</dt><dd className="font-mono">{selectedSale.lookingPct || '—'}</dd></div>
               <div><dt className="text-slate-500">Serial Number</dt><dd className="font-mono">{selectedSale.serialNumber || '—'}</dd></div>
               <div><dt className="text-slate-500">Customer</dt><dd>{selectedSale.customerName || 'Walk-in'} {selectedSale.customerPhone}</dd></div>
-              <div><dt className="text-slate-500">Customer Location</dt><dd>{selectedSale.customerLocation || '—'}</dd></div>
               <div><dt className="text-slate-500">Employee</dt><dd>{selectedSale.employeeName}</dd></div>
               <div className="col-span-2"><dt className="text-slate-500">Selected Google Sheet</dt><dd>{selectedSale.sheetName}</dd></div>
               <div className="col-span-2"><dt className="text-slate-500">Remarks</dt><dd>{selectedSale.remarks || '—'}</dd></div>
@@ -358,17 +295,6 @@ export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRol
                 <pre className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-[11px] font-mono leading-relaxed whitespace-pre-wrap max-h-56 overflow-y-auto">
                   {selectedSale.liveSellMessage}
                 </pre>
-              </div>
-            )}
-            {canDelete && (
-              <div className="flex justify-end border-t border-slate-200 dark:border-slate-800 pt-3">
-                <button
-                  type="button"
-                  onClick={() => { setDeleteTarget(selectedSale); setDeleteAcknowledged(false); setDeleteError(''); }}
-                  className="inline-flex items-center gap-2 rounded-lg border border-rose-300 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-900 dark:text-rose-300 dark:hover:bg-rose-950/30"
-                >
-                  <Trash2 className="h-3.5 w-3.5" /> Delete this sale permanently
-                </button>
               </div>
             )}
           </div>
@@ -418,37 +344,6 @@ export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRol
               >
                 {submitting ? 'Voiding...' : 'Confirm Void'}
               </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {deleteTarget && canDelete && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 p-4">
-          <form onSubmit={handleDeleteSale} className="w-full max-w-md bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-900 rounded-xl p-6 space-y-4">
-            <div className="flex items-center gap-2 text-rose-700 dark:text-rose-300">
-              <Trash2 className="w-5 h-5" />
-              <h3 className="font-display font-bold text-base">Permanently Delete Sale</h3>
-            </div>
-            <p className="text-xs text-slate-600 dark:text-slate-300">
-              Delete invoice <strong>{deleteTarget.invoiceNo}</strong> for <strong>{deleteTarget.brand} {deleteTarget.model}</strong>?
-              This removes the ledger entry permanently. {deleteTarget.status === 'completed'
-                ? `One unit will be restored to ${deleteTarget.branch} stock.`
-                : 'This sale was already voided, so stock will not be restored again.'}
-            </p>
-            <label className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50/70 p-3 text-xs text-rose-800 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-200">
-              <input
-                type="checkbox"
-                checked={deleteAcknowledged}
-                onChange={(e) => { setDeleteAcknowledged(e.target.checked); setDeleteError(''); }}
-                className="mt-0.5 rounded border-rose-300 text-rose-600 focus:ring-rose-600"
-              />
-              <span>I understand this permanently removes the ledger entry. This action cannot be undone.</span>
-            </label>
-            {deleteError && <p role="alert" className="text-xs text-red-600">{deleteError}</p>}
-            <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setDeleteTarget(null)} className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-semibold">Cancel</button>
-              <button type="submit" disabled={submitting || !deleteAcknowledged} className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50">{submitting ? 'Deleting…' : 'Delete Permanently'}</button>
             </div>
           </form>
         </div>
