@@ -314,6 +314,8 @@ export const api = {
     lookingPct?: string;
     customerName?: string;
     customerPhone?: string;
+    customerLocation?: string;
+    liveSellMessageOverride?: string;
     sourceName?: string;
     dealBy?: string;
     assistBy?: string;
@@ -362,6 +364,11 @@ export const api = {
     apiFetch<{ ok: boolean }>(`/api/sales/${id}/void`, {
       method: 'POST',
       body: JSON.stringify({ reason }),
+    }),
+
+  deleteSale: (id: number) =>
+    apiFetch<{ ok: boolean; inventoryRestored: boolean }>(`/api/sales/${id}`, {
+      method: 'DELETE',
     }),
 
   listAccessories: () => apiFetch<{ accessories: AccessoryRecord[] }>('/api/accessories'),

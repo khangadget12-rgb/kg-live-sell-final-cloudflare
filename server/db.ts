@@ -360,6 +360,20 @@ export function runMigrations(): void {
     })();
   }
 
+  if (!applied.has(5)) {
+    db.transaction(() => {
+      const salesCols = db.prepare('PRAGMA table_info(sales)').all() as Array<{ name: string }>;
+      if (!salesCols.some((column) => column.name === 'customer_location')) {
+        db.exec("ALTER TABLE sales ADD COLUMN customer_location TEXT NOT NULL DEFAULT ''");
+      }
+      db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+        5,
+        'sale_customer_location',
+        new Date().toISOString()
+      );
+    })();
+  }
+
   // Store exported backup snapshots in the same SQLite-backed Durable Object.
   // Chunking keeps each individual SQL row well below the platform's row-size limit.
   db.exec(`

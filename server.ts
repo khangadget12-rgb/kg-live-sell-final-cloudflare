@@ -1770,6 +1770,8 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     const lookingPct = formatLookingPercentage(String(req.body?.lookingPct || ''));
     const customerName = String(req.body?.customerName || '').trim();
     const customerPhone = String(req.body?.customerPhone || '').trim();
+    const customerLocation = String(req.body?.customerLocation || '').trim().slice(0, 240);
+    const liveSellMessageOverride = String(req.body?.liveSellMessageOverride || '').trim().slice(0, 12000);
     const sourceName = String(req.body?.sourceName || '').trim();
     const dealBy = String(req.body?.dealBy || '').trim();
     const assistBy = String(req.body?.assistBy || '').trim();
@@ -1871,22 +1873,25 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
           memoPicStatus,
           dealTime,
           remarks,
+          customerLocation,
           remainingRajshahiQty: nextQty,
           remainingBranchStock: { RG: nextRg, NM: nextNm, JSM: nextJsm, CC: nextCc },
           monthlyBranchCounts,
           currencyMode: user.preferences.currencyFormat,
           timeZone,
         });
+        // A user may optionally calibrate the generated customer-facing post in the composer.
+        const finalLiveSellMessage = liveSellMessageOverride || liveSellMessage;
 
         const invoiceNo = `KG-${branch}-${Date.now().toString().slice(-6)}`;
         const saleInfo = db
           .prepare(`
             INSERT INTO sales (
               invoice_no, branch, laptop_id, brand, model, variant, serial_number,
-              sale_price, discount_amount, looking_pct, customer_name, customer_phone,
+              sale_price, discount_amount, looking_pct, customer_name, customer_phone, customer_location,
               remarks, live_sell_message, sheet_id, sheet_name, employee_id, employee_name, sold_at,
               status, idempotency_key
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)
           `)
           .run(
             invoiceNo,
@@ -1901,8 +1906,9 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
             lookingPct,
             customerName,
             customerPhone,
+            customerLocation,
             remarks,
-            liveSellMessage,
+            finalLiveSellMessage,
             sheetRow?.id ?? null,
             sheetRow?.name ?? 'Rajshahi Sheet',
             user.id,
@@ -1974,7 +1980,7 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
         return {
           saleId,
           invoiceNo,
-          liveSellMessage,
+          liveSellMessage: finalLiveSellMessage,
           remainingRajshahiQty: nextQty,
           monthlyBranchCounts,
           triggeredRefills,
@@ -2024,7 +2030,7 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     }
     if (q) {
       rows = rows.filter((r) => {
-        const hay = `${r.invoice_no} ${r.brand} ${r.model} ${r.variant} ${r.serial_number} ${r.customer_name} ${r.customer_phone} ${r.employee_name} ${r.remarks}`.toLowerCase();
+        const hay = `${r.invoice_no} ${r.brand} ${r.model} ${r.variant} ${r.serial_number} ${r.customer_name} ${r.customer_phone} ${r.customer_location || ''} ${r.employee_name} ${r.remarks}`.toLowerCase();
         return hay.includes(q);
       });
     }
@@ -2098,6 +2104,63 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
 
     broadcastRealtimeEvent('inventory_updated', { reason: 'sale_voided', summary: String(saleRow.invoice_no) });
     res.json({ ok: true });
+  });
+
+  // Permanent sale deletion is reserved exclusively for Super Admin.
+  // If the sale is still completed, restore its sold unit to the original branch.
+  // Voided sales have already restored stock, so they must not add a second unit.
+  app.delete('/api/sales/:id', requireAuth, requireRole('super_admin'), (req: AuthedRequest, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      res.status(400).json({ error: 'Invalid sale ID' });
+      return;
+    }
+
+    try {
+      const result = db.transaction(() => {
+        const saleRow = db.prepare('SELECT * FROM sales WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+        if (!saleRow) throw { status: 404, message: 'Sale transaction not found' };
+
+        const branch = String(saleRow.branch) as BranchCode;
+        const laptopId = String(saleRow.laptop_id || '');
+        let inventoryRestored = false;
+        if (saleRow.status === 'completed' && laptopId) {
+          const laptopRow = db.prepare('SELECT * FROM laptops WHERE id = ?').get(laptopId) as Record<string, unknown> | undefined;
+          if (laptopRow) {
+            const laptop = mapLaptopRow(laptopRow);
+            const nextRg = branch === 'RG' ? laptop.rg + 1 : laptop.rg;
+            const nextNm = branch === 'NM' ? laptop.nm + 1 : laptop.nm;
+            const nextJsm = branch === 'JSM' ? laptop.jsm + 1 : laptop.jsm;
+            const nextCc = branch === 'CC' ? laptop.cc + 1 : laptop.cc;
+            const nextQty = nextRg + nextNm + nextJsm + nextCc;
+            db.prepare('UPDATE laptops SET rg = ?, nm = ?, jsm = ?, cc = ?, qty = ?, total_value = ? WHERE id = ?').run(
+              nextRg, nextNm, nextJsm, nextCc, nextQty, (laptop.disPrice || laptop.askPrice) * nextQty, laptopId
+            );
+            updateDatasetCounts(laptop.datasetId);
+            const updated = mapLaptopRow(db.prepare('SELECT * FROM laptops WHERE id = ?').get(laptopId) as Record<string, unknown>);
+            syncRefillAlertsForLaptop(updated, new Date().toISOString());
+            inventoryRestored = true;
+          }
+        }
+
+        logAudit(
+          req.user!.fullName,
+          req.user!.role,
+          'DELETE_SALE',
+          'sale',
+          String(id),
+          `Permanently deleted ${String(saleRow.invoice_no)} (${branch} · ${String(saleRow.brand)} ${String(saleRow.model)}). Inventory restored: ${inventoryRestored ? 'yes' : 'no (already voided or laptop unavailable)'}.`
+        );
+        db.prepare('DELETE FROM sales WHERE id = ?').run(id);
+        return { inventoryRestored, invoiceNo: String(saleRow.invoice_no) };
+      })();
+
+      broadcastRealtimeEvent('inventory_updated', { reason: 'sale_deleted', summary: result.invoiceNo });
+      res.json({ ok: true, inventoryRestored: result.inventoryRestored });
+    } catch (error) {
+      const e = error as { status?: number; message?: string };
+      res.status(e.status || 500).json({ error: e.message || 'Failed to delete sale' });
+    }
   });
 
   // ==========================================
@@ -2503,6 +2566,7 @@ function mapSaleRow(r: Record<string, unknown>) {
     lookingPct: String(r.looking_pct),
     customerName: String(r.customer_name),
     customerPhone: String(r.customer_phone),
+    customerLocation: String(r.customer_location || ''),
     remarks: String(r.remarks),
     liveSellMessage: String(r.live_sell_message || ''),
     sheetId: r.sheet_id === null ? null : Number(r.sheet_id),

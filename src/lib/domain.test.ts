@@ -134,6 +134,48 @@ test('quotation formatter outputs direct numbered lines without banner header or
   assert.equal(directQuote.includes('====='), false);
 });
 
+test('Laptop Finder quotation copy never includes internal laptop remarks', () => {
+  const laptop = {
+    id: 'copy-no-remarks',
+    datasetId: 'rajshahi_main',
+    rowNo: 1,
+    brand: 'Dell',
+    model: 'Latitude 5420',
+    variant: '16GB / 256GB',
+    category: 'Business Pro' as const,
+    processor: 'Core i5-1145G7',
+    cpuGen: 11,
+    cpuCoresThreads: '4/8',
+    ramGb: 16,
+    ramType: 'DDR4',
+    ramBus: 'DDR4-3200',
+    storageGb: 256,
+    storageConfig: '256GB SSD',
+    displayRaw: '14 inch FHD',
+    displayInches: 14,
+    resolution: '1920x1080',
+    isTouch: false,
+    isX360: false,
+    isOled: false,
+    refreshHz: 60,
+    gpu: '',
+    isDedicatedGpu: false,
+    condition: 'Used' as const,
+    detailedCondition: '',
+    askPrice: 50000,
+    disPrice: 45000,
+    borderPrice: 42000,
+    rg: 1, nm: 0, jsm: 0, cc: 0, qty: 1, totalValue: 45000,
+    color: 'Black', adapter: '', batteryBackup: '', os: '', entryDate: '', location: 'Rajshahi',
+    serialWarranty: '', remarks: 'Keyboard has cosmetic marks - internal note',
+    hasDetachableKeyboard: false, hasSimLte: false, hasNpu: false, isCleanCondition: true,
+  };
+  const copied = buildQuotationText([laptop], 'discounted');
+  assert.equal(copied.includes('Remarks'), false);
+  assert.equal(copied.includes('cosmetic marks'), false);
+  assert.equal(copied.includes('Keyboard has'), false);
+});
+
 test('live sell formatter outputs exact branch codename, composer fields, location, rajshahi stock breakdown, and monthly branch totals', () => {
   const sampleLaptop = {
     id: 'l-xps',
@@ -198,6 +240,7 @@ test('live sell formatter outputs exact branch codename, composer fields, locati
     picVideoStatus: 'Sent',
     memoPicStatus: 'Sent',
     dealTime: '110',
+    customerLocation: 'Rajshahi City',
     remainingRajshahiQty: 2,
     remainingBranchStock: { RG: 1, NM: 1, JSM: 0, CC: 0 },
     monthlyBranchCounts: { CC: 2, JSM: 6, NM: 22, RG: 83 },
@@ -217,6 +260,7 @@ test('live sell formatter outputs exact branch codename, composer fields, locati
     'Pic & Video : Sent',
     'Memo Pic : Sent',
     'Deal Time : 110 Min.',
+    'Customer Location : Rajshahi City',
     'Location : Rajshahi',
     'Entry Date : 10 November 2026',
     'Available In Rajshahi : 2 Pcs (RG-1, NM-1)',

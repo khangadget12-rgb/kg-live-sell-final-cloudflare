@@ -145,10 +145,9 @@ export function formatQuotationLine(
   if (laptop.gpu) {
     parts.push(laptop.gpu);
   }
-  if (laptop.hasDetachableKeyboard && !laptop.remarks.toLowerCase().includes('detachable')) {
+  // Laptop Finder copy output is customer-facing; internal inspection remarks stay private.
+  if (laptop.hasDetachableKeyboard) {
     parts.push('With Detachable Keyboard');
-  } else if (laptop.remarks && laptop.remarks.length <= 40 && !laptop.remarks.toLowerCase().includes('cycle')) {
-    parts.push(laptop.remarks);
   }
 
   parts.push(priceStr);
@@ -286,6 +285,7 @@ export function buildLiveSellMessage(params: {
   memoPicStatus?: string;
   dealTime?: string;
   remarks?: string;
+  customerLocation?: string;
   remainingRajshahiQty: number;
   remainingBranchStock?: Partial<Record<BranchCode, number>>;
   monthlyBranchCounts: MonthlyBranchSalesCounts;
@@ -307,6 +307,7 @@ export function buildLiveSellMessage(params: {
     memoPicStatus,
     dealTime,
     remarks,
+    customerLocation,
     remainingRajshahiQty,
     remainingBranchStock,
     monthlyBranchCounts,
@@ -405,6 +406,9 @@ export function buildLiveSellMessage(params: {
 
   const remarksClean = (remarks || '').trim();
   if (remarksClean) lines.push(`Remarks : ${remarksClean}`);
+
+  const customerLocationClean = (customerLocation || '').trim();
+  if (customerLocationClean) lines.push(`Customer Location : ${customerLocationClean}`);
 
   lines.push(`Location : ${locationStr}`);
   lines.push(`Entry Date : ${entryStr}`);
