@@ -367,8 +367,9 @@ export const api = {
     }),
 
   deleteSale: (id: number) =>
-    apiFetch<{ ok: boolean; inventoryRestored: boolean }>(`/api/sales/${id}`, {
-      method: 'DELETE',
+    apiFetch<{ ok: boolean; inventoryRestored: boolean; invoiceNo?: string }>(`/api/sales/${id}/delete`, {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
     }),
 
   listAccessories: () => apiFetch<{ accessories: AccessoryRecord[] }>('/api/accessories'),

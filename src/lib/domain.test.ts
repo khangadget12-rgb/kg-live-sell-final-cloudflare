@@ -16,6 +16,7 @@ import { parseDelimitedRows, parseRowsToLaptops } from './specParser';
 import {
   EMPTY_FILTERS,
   filterLaptops,
+  sortLaptops,
   computeInventoryAnalytics,
   resolveEffectiveBranch,
   getScopedStockStats,
@@ -355,4 +356,25 @@ test('refill alert triggers when branch hits 0 and others > 1, suppresses duplic
   const eval4 = evaluateRefillForLaptop(baseLaptop, afterResolve);
   assert.equal(eval4.toTrigger.length, 1);
   assert.equal(eval4.toTrigger[0].exhaustedBranch, 'RG');
+});
+
+
+test('Laptop Finder price sorting is numeric in both directions and keeps unpriced items last', () => {
+  const csvPath = path.resolve(process.cwd(), 'public/assets/aistudio/KG_Stock__Rajshahi_dcce8414');
+  const laptops = parseRowsToLaptops(parseDelimitedRows(fs.readFileSync(csvPath, 'utf8')), { datasetId: 'rajshahi' });
+  const ascending = sortLaptops(laptops, 'price_low_to_high', 'discounted');
+  const descending = sortLaptops(laptops, 'price_high_to_low', 'discounted');
+  const ascPrices = ascending.map((l) => l.disPrice > 0 ? l.disPrice : l.askPrice).filter((p) => p > 0);
+  const descPrices = descending.map((l) => l.disPrice > 0 ? l.disPrice : l.askPrice).filter((p) => p > 0);
+  assert.ok(ascPrices.every((price, index) => index === 0 || ascPrices[index - 1] <= price));
+  assert.ok(descPrices.every((price, index) => index === 0 || descPrices[index - 1] >= price));
+  const firstMissing = ascending.findIndex((l) => !(l.disPrice > 0 || l.askPrice > 0));
+  if (firstMissing >= 0) assert.ok(ascending.slice(firstMissing).every((l) => !(l.disPrice > 0 || l.askPrice > 0)));
+});
+
+test('Laptop Finder applies minimum RAM and maximum storage filters', () => {
+  const csvPath = path.resolve(process.cwd(), 'public/assets/aistudio/KG_Stock__Rajshahi_dcce8414');
+  const laptops = parseRowsToLaptops(parseDelimitedRows(fs.readFileSync(csvPath, 'utf8')), { datasetId: 'rajshahi' });
+  const result = filterLaptops(laptops, { ...EMPTY_FILTERS, minRamGb: 16, maxStorageGb: 1024 });
+  assert.ok(result.items.every((l) => l.ramGb >= 16 && l.storageGb <= 1024));
 });

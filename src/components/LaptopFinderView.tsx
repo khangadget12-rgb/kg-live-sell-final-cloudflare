@@ -35,6 +35,8 @@ import {
   filterLaptops,
   getScopedStockStats,
   resolveEffectiveBranch,
+  sortLaptops,
+  type LaptopSortMode,
   type SearchFilterState,
 } from '../lib/smartSearch';
 import { api } from '../services/api';
@@ -95,6 +97,7 @@ export const LaptopFinderView: React.FC<LaptopFinderViewProps> = ({
   const [filters, setFilters] = useState<SearchFilterState>(EMPTY_FILTERS);
   const [suppressedKeys, setSuppressedKeys] = useState<Set<string>>(new Set());
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [sortMode, setSortMode] = useState<LaptopSortMode>('price_low_to_high');
 
   // Price Visibility Eye Toggles (any user)
   const [showAsking, setShowAsking] = useState(preferences.showAskingPrice);
@@ -179,9 +182,26 @@ export const LaptopFinderView: React.FC<LaptopFinderViewProps> = ({
     [datasets, activeDatasetId]
   );
 
-  const { items: filteredLaptops, recognizedTags } = useMemo(
+  const { items: matchedLaptops, recognizedTags } = useMemo(
     () => filterLaptops(datasetLaptops, filters, suppressedKeys),
     [datasetLaptops, filters, suppressedKeys]
+  );
+
+  const filteredLaptops = useMemo(
+    () => sortLaptops(matchedLaptops, sortMode, filters.priceField),
+    [matchedLaptops, sortMode, filters.priceField]
+  );
+
+  const brandOptions = useMemo(
+    () => Array.from(new Set(datasetLaptops.map((l) => l.brand.trim()).filter(Boolean)))
+      .sort((a, b) => a.localeCompare(b)),
+    [datasetLaptops]
+  );
+
+  const cpuGenerationOptions = useMemo(
+    () => Array.from(new Set(datasetLaptops.map((l) => l.cpuGen).filter((value): value is number => Number.isFinite(value) && value > 0)))
+      .sort((a, b) => a - b),
+    [datasetLaptops]
   );
 
   const effectiveBranch = useMemo(
@@ -672,6 +692,22 @@ export const LaptopFinderView: React.FC<LaptopFinderViewProps> = ({
                 ))}
               </select>
 
+              <select
+                aria-label="Sort laptop results"
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value as LaptopSortMode)}
+                className="px-3 py-2.5 text-xs font-semibold rounded-lg border border-teal-300 dark:border-teal-800 bg-teal-50 dark:bg-teal-950/30 text-teal-800 dark:text-teal-200"
+              >
+                <option value="price_low_to_high">Price: Low to High</option>
+                <option value="price_high_to_low">Price: High to Low</option>
+                <option value="stock_high_to_low">Stock: High to Low</option>
+                <option value="stock_low_to_high">Stock: Low to High</option>
+                <option value="ram_high_to_low">RAM: High to Low</option>
+                <option value="storage_high_to_low">Storage: High to Low</option>
+                <option value="brand_a_to_z">Brand: A to Z</option>
+                <option value="newest">Newest Entry</option>
+              </select>
+
               <button
                 type="button"
                 onClick={() => setShowAdvanced((s) => !s)}
@@ -858,6 +894,22 @@ export const LaptopFinderView: React.FC<LaptopFinderViewProps> = ({
                     </select>
                   </div>
                   <div>
+                    <label htmlFor="flt-min-ram" className="block text-[11px] font-medium text-slate-500 mb-1">Minimum RAM</label>
+                    <select
+                      id="flt-min-ram"
+                      value={filters.minRamGb ?? ''}
+                      onChange={(e) => setFilters((p) => ({ ...p, minRamGb: e.target.value ? Number(e.target.value) : null }))}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    >
+                      <option value="">Any minimum</option>
+                      <option value="8">8 GB or more</option>
+                      <option value="16">16 GB or more</option>
+                      <option value="24">24 GB or more</option>
+                      <option value="32">32 GB or more</option>
+                      <option value="64">64 GB or more</option>
+                    </select>
+                  </div>
+                  <div>
                     <label htmlFor="flt-storage" className="block text-[11px] font-medium text-slate-500 mb-1">Min Storage</label>
                     <select
                       id="flt-storage"
@@ -870,6 +922,21 @@ export const LaptopFinderView: React.FC<LaptopFinderViewProps> = ({
                       <option value="256">256GB+</option>
                       <option value="512">512GB+</option>
                       <option value="1024">1TB+</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="flt-max-storage" className="block text-[11px] font-medium text-slate-500 mb-1">Maximum Storage</label>
+                    <select
+                      id="flt-max-storage"
+                      value={filters.maxStorageGb ?? ''}
+                      onChange={(e) => setFilters((p) => ({ ...p, maxStorageGb: e.target.value ? Number(e.target.value) : null }))}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    >
+                      <option value="">No maximum</option>
+                      <option value="256">Up to 256GB</option>
+                      <option value="512">Up to 512GB</option>
+                      <option value="1024">Up to 1TB</option>
+                      <option value="2048">Up to 2TB</option>
                     </select>
                   </div>
                   <div>
@@ -903,6 +970,30 @@ export const LaptopFinderView: React.FC<LaptopFinderViewProps> = ({
                       <option value="Core Ultra">Intel Core Ultra</option>
                       <option value="Ryzen">AMD Ryzen</option>
                       <option value="M">Apple Silicon</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="flt-cpu-gen" className="block text-[11px] font-medium text-slate-500 mb-1">CPU Generation</label>
+                    <select
+                      id="flt-cpu-gen"
+                      value={filters.cpuGen ?? ''}
+                      onChange={(e) => setFilters((p) => ({ ...p, cpuGen: e.target.value ? Number(e.target.value) : null }))}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    >
+                      <option value="">Any generation</option>
+                      {cpuGenerationOptions.map((gen) => <option key={gen} value={gen}>{gen}th Gen</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="flt-brand" className="block text-[11px] font-medium text-slate-500 mb-1">Brand</label>
+                    <select
+                      id="flt-brand"
+                      value={filters.brand ?? ''}
+                      onChange={(e) => setFilters((p) => ({ ...p, brand: e.target.value || null }))}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    >
+                      <option value="">All brands</option>
+                      {brandOptions.map((brand) => <option key={brand} value={brand}>{brand}</option>)}
                     </select>
                   </div>
                   <div>

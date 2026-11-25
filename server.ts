@@ -2107,9 +2107,9 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
   });
 
   // Permanent sale deletion is reserved exclusively for Super Admin.
-  // If the sale is still completed, restore its sold unit to the original branch.
-  // Voided sales have already restored stock, so they must not add a second unit.
-  app.delete('/api/sales/:id', requireAuth, requireRole('super_admin'), (req: AuthedRequest, res) => {
+  // Both DELETE and POST aliases are supported so browser/proxy layers that
+  // interfere with DELETE still have a reliable same-origin mutation path.
+  const permanentlyDeleteSale = (req: AuthedRequest, res: Response): void => {
     const id = Number(req.params.id);
     if (!Number.isSafeInteger(id) || id <= 0) {
       res.status(400).json({ error: 'Invalid sale ID' });
@@ -2119,11 +2119,14 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     try {
       const result = db.transaction(() => {
         const saleRow = db.prepare('SELECT * FROM sales WHERE id = ?').get(id) as Record<string, unknown> | undefined;
-        if (!saleRow) throw { status: 404, message: 'Sale transaction not found' };
+        if (!saleRow) throw Object.assign(new Error('Sale transaction not found'), { status: 404 });
 
         const branch = String(saleRow.branch) as BranchCode;
         const laptopId = String(saleRow.laptop_id || '');
         let inventoryRestored = false;
+
+        // A completed sale consumed one physical unit. Restore exactly one unit
+        // before removing the ledger row. A voided sale was already restocked.
         if (saleRow.status === 'completed' && laptopId) {
           const laptopRow = db.prepare('SELECT * FROM laptops WHERE id = ?').get(laptopId) as Record<string, unknown> | undefined;
           if (laptopRow) {
@@ -2137,12 +2140,13 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
               nextRg, nextNm, nextJsm, nextCc, nextQty, (laptop.disPrice || laptop.askPrice) * nextQty, laptopId
             );
             updateDatasetCounts(laptop.datasetId);
-            const updated = mapLaptopRow(db.prepare('SELECT * FROM laptops WHERE id = ?').get(laptopId) as Record<string, unknown>);
-            syncRefillAlertsForLaptop(updated, new Date().toISOString());
+            const updatedRow = db.prepare('SELECT * FROM laptops WHERE id = ?').get(laptopId) as Record<string, unknown> | undefined;
+            if (updatedRow) syncRefillAlertsForLaptop(mapLaptopRow(updatedRow), new Date().toISOString());
             inventoryRestored = true;
           }
         }
 
+        // Record the irreversible action inside the same transaction as deletion.
         logAudit(
           req.user!.fullName,
           req.user!.role,
@@ -2156,12 +2160,16 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
       })();
 
       broadcastRealtimeEvent('inventory_updated', { reason: 'sale_deleted', summary: result.invoiceNo });
-      res.json({ ok: true, inventoryRestored: result.inventoryRestored });
+      res.json({ ok: true, inventoryRestored: result.inventoryRestored, invoiceNo: result.invoiceNo });
     } catch (error) {
       const e = error as { status?: number; message?: string };
+      console.error('Permanent sale deletion failed:', { saleId: id, message: e.message || String(error) });
       res.status(e.status || 500).json({ error: e.message || 'Failed to delete sale' });
     }
-  });
+  };
+
+  app.delete('/api/sales/:id', requireAuth, requireRole('super_admin'), permanentlyDeleteSale);
+  app.post('/api/sales/:id/delete', requireAuth, requireRole('super_admin'), permanentlyDeleteSale);
 
   // ==========================================
   // ACCESSORIES & RAM/SSD (SEPARATE FROM LIVE SELL)

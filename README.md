@@ -1,4 +1,4 @@
-# Khan Gadget — KG Live Sell (Cloudflare Edition 2.5.0)
+# Khan Gadget — KG Live Sell (Cloudflare Edition 2.5.3)
 
 Complete browser-deployed Cloudflare Workers release. Read `START-HERE-CLOUDFLARE.md` before deployment.
 
