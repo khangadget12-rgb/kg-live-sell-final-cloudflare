@@ -83,9 +83,18 @@ async function apiFetch<T>(url: string, init: RequestInit = {}): Promise<T> {
     credentials: 'include',
   });
 
-  const data = await res.json().catch(() => ({}));
+  const responseText = await res.text();
+  let data: { error?: string } = {};
+  if (responseText) {
+    try {
+      data = JSON.parse(responseText) as { error?: string };
+    } catch {
+      // Preserve a useful message when a proxy or Worker returns plain text.
+      data = { error: responseText.slice(0, 240) };
+    }
+  }
   if (!res.ok) {
-    throw new Error((data as { error?: string }).error || `Request failed (${res.status})`);
+    throw new Error(data.error || `Request failed (${res.status})`);
   }
   return data as T;
 }
