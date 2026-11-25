@@ -501,12 +501,14 @@ async function syncRajshahiSheetNow(actorName?: string): Promise<{
 
     try {
       const sheetUrl = getConfiguredRajshahiSheetUrl();
-      const previousLaptops = getLaptopsByDataset('rajshahi_main');
-      modelCount = previousLaptops.length;
-      totalUnits = previousLaptops.reduce((sum, laptop) => sum + laptop.qty, 0);
-      branchSummary = summarizeRajshahiBranchUnits(previousLaptops);
 
       if (!sheetUrl) {
+        // No recurring scan is scheduled without a sheet URL. Keep the manual
+        // status accurate by reading inventory once in this non-scanning path.
+        const currentLaptops = getLaptopsByDataset('rajshahi_main');
+        modelCount = currentLaptops.length;
+        totalUnits = currentLaptops.reduce((sum, laptop) => sum + laptop.qty, 0);
+        branchSummary = summarizeRajshahiBranchUnits(currentLaptops);
         summary = 'No Rajshahi live Google Sheet URL is configured. Existing inventory is unchanged.';
       } else {
         const csvUrl = extractGoogleSheetCsvUrl(sheetUrl);
@@ -524,81 +526,108 @@ async function syncRajshahiSheetNow(actorName?: string): Promise<{
 
         const normalized = normalizeCsvContent(csvText);
         const nextHash = sha256(normalized);
-        const nextLaptops = parseRowsToLaptops(rows, { datasetId: 'rajshahi_main' });
-        if (nextLaptops.length === 0) {
-          throw new Error('Rajshahi sheet contained no valid laptop rows. Existing inventory was kept unchanged.');
-        }
+        const previousHash = getAppSetting('rajshahi_last_sync_hash', '');
 
-        const diff = diffLaptopSnapshots(previousLaptops, nextLaptops);
-        modelCount = nextLaptops.length;
-        totalUnits = diff.nextUnits;
-        branchSummary = summarizeRajshahiBranchUnits(nextLaptops);
+        // The scanner runs frequently, but the live sheet usually stays the
+        // same between checks. Read the small dataset summary first; when the
+        // validated sheet hash is unchanged, do not load every laptop row.
+        // This avoids consuming thousands of Durable Object SQLite row reads
+        // on every no-change scan.
+        const inventoryMeta = db
+          .prepare('SELECT model_count, total_units FROM datasets WHERE id = ?')
+          .get('rajshahi_main') as { model_count: number; total_units: number } | undefined;
+        const hasInventory = Boolean(
+          db.prepare('SELECT 1 AS present FROM laptops WHERE dataset_id = ? LIMIT 1').get('rajshahi_main')
+        );
 
-        if (getAppSetting('rajshahi_last_sync_hash', '') === nextHash && previousLaptops.length > 0) {
+        if (previousHash && previousHash === nextHash && inventoryMeta && Number(inventoryMeta.model_count) > 0 && hasInventory) {
+          modelCount = Number(inventoryMeta.model_count) || 0;
+          totalUnits = Number(inventoryMeta.total_units) || 0;
+          branchSummary = getAppSetting('rajshahi_last_scan_branches', '');
           summary = `Checked successfully: ${modelCount} models, ${totalUnits} units. No sheet changes detected.`;
           setAppSetting('rajshahi_last_scan_hash', nextHash);
-        } else if (!diff.hasChanges && previousLaptops.length > 0) {
-          setAppSetting('rajshahi_last_sync_hash', nextHash);
-          summary = `Checked successfully: ${modelCount} models, ${totalUnits} units. No stock or specification changes detected.`;
         } else {
-          const nowIso = new Date().toISOString();
-          const previousActiveKeys = new Set(
-            getAllRefillAlerts()
-              .filter((alert) => alert.status === 'active')
-              .map((alert) => `${alert.brand}|${alert.model}|${alert.variant}|${alert.exhaustedBranch}`.toLowerCase())
-          );
+          // Only convert rows and read the full inventory when the sheet has
+          // changed (or when this is the first scan / the dataset was not seeded).
+          const nextLaptops = parseRowsToLaptops(rows, { datasetId: 'rajshahi_main' });
+          if (nextLaptops.length === 0) {
+            throw new Error('Rajshahi sheet contained no valid laptop rows. Existing inventory was kept unchanged.');
+          }
 
-          db.transaction(() => {
-            db.prepare('DELETE FROM laptops WHERE dataset_id = ?').run('rajshahi_main');
-            insertLaptopsBatch(nextLaptops);
-            db.prepare(
-              'UPDATE datasets SET source_url = ?, model_count = ?, total_units = ?, imported_at = ? WHERE id = ?'
-            ).run(sheetUrl, nextLaptops.length, totalUnits, nowIso, 'rajshahi_main');
+          const previousLaptops = getLaptopsByDataset('rajshahi_main');
+          const diff = diffLaptopSnapshots(previousLaptops, nextLaptops);
+          modelCount = nextLaptops.length;
+          totalUnits = diff.nextUnits;
+          branchSummary = summarizeRajshahiBranchUnits(nextLaptops);
 
-            db.prepare("UPDATE refill_alerts SET status = 'resolved', resolved_at = ?, resolved_by = 'System (Sheet Synced)' WHERE status = 'active'")
-              .run(nowIso);
-            const recipients = getNotificationRecipients();
-            const insertNotification = db.prepare(`
-              INSERT INTO notifications (recipient_user_id, type, title, message, branch, laptop_model, created_at)
-              VALUES (?, 'refill_alert', ?, ?, ?, ?, ?)
-            `);
-            for (const laptop of nextLaptops) {
-              const triggers = syncRefillAlertsForLaptop(laptop, nowIso);
-              if (triggers.length > 0 && isRefillNotificationsEnabled()) {
-                for (const trigger of triggers) {
-                  const key = `${laptop.brand}|${laptop.model}|${laptop.variant}|${trigger.exhaustedBranch}`.toLowerCase();
-                  if (previousActiveKeys.has(key)) continue;
-                  for (const userId of recipients) {
-                    insertNotification.run(
-                      userId,
-                      `Refill Reminder: ${laptop.brand} ${laptop.model}`,
-                      `${trigger.exhaustedBranch} branch is out of stock (0 units) while other branches hold ${trigger.otherBranchesQty} units.`,
-                      trigger.exhaustedBranch,
-                      `${laptop.brand} ${laptop.model}`,
-                      nowIso
-                    );
+          if (previousHash === nextHash && previousLaptops.length > 0) {
+            // The metadata row may have been missing/stale. Preserve the same
+            // no-change behavior as the original scanner.
+            summary = `Checked successfully: ${modelCount} models, ${totalUnits} units. No sheet changes detected.`;
+            setAppSetting('rajshahi_last_scan_hash', nextHash);
+          } else if (!diff.hasChanges && previousLaptops.length > 0) {
+            setAppSetting('rajshahi_last_sync_hash', nextHash);
+            summary = `Checked successfully: ${modelCount} models, ${totalUnits} units. No stock or specification changes detected.`;
+          } else {
+            const nowIso = new Date().toISOString();
+            const previousActiveKeys = new Set(
+              getAllRefillAlerts()
+                .filter((alert) => alert.status === 'active')
+                .map((alert) => `${alert.brand}|${alert.model}|${alert.variant}|${alert.exhaustedBranch}`.toLowerCase())
+            );
+
+            db.transaction(() => {
+              db.prepare('DELETE FROM laptops WHERE dataset_id = ?').run('rajshahi_main');
+              insertLaptopsBatch(nextLaptops);
+              db.prepare(
+                'UPDATE datasets SET source_url = ?, model_count = ?, total_units = ?, imported_at = ? WHERE id = ?'
+              ).run(sheetUrl, nextLaptops.length, totalUnits, nowIso, 'rajshahi_main');
+
+              db.prepare("UPDATE refill_alerts SET status = 'resolved', resolved_at = ?, resolved_by = 'System (Sheet Synced)' WHERE status = 'active'")
+                .run(nowIso);
+              const recipients = getNotificationRecipients();
+              const insertNotification = db.prepare(`
+                INSERT INTO notifications (recipient_user_id, type, title, message, branch, laptop_model, created_at)
+                VALUES (?, 'refill_alert', ?, ?, ?, ?, ?)
+              `);
+              for (const laptop of nextLaptops) {
+                const triggers = syncRefillAlertsForLaptop(laptop, nowIso);
+                if (triggers.length > 0 && isRefillNotificationsEnabled()) {
+                  for (const trigger of triggers) {
+                    const key = `${laptop.brand}|${laptop.model}|${laptop.variant}|${trigger.exhaustedBranch}`.toLowerCase();
+                    if (previousActiveKeys.has(key)) continue;
+                    for (const userId of recipients) {
+                      insertNotification.run(
+                        userId,
+                        `Refill Reminder: ${laptop.brand} ${laptop.model}`,
+                        `${trigger.exhaustedBranch} branch is out of stock (0 units) while other branches hold ${trigger.otherBranchesQty} units.`,
+                        trigger.exhaustedBranch,
+                        `${laptop.brand} ${laptop.model}`,
+                        nowIso
+                      );
+                    }
                   }
                 }
               }
-            }
-          })();
+            })();
 
-          changed = true;
-          summary = diff.hasChanges
-            ? diff.summary
-            : `Loaded ${nextLaptops.length} Rajshahi models (${totalUnits} units).`;
-          setAppSetting('rajshahi_last_sync_hash', nextHash);
-          setAppSetting('rajshahi_last_sync_at', nowIso);
-          setAppSetting('rajshahi_last_change_summary', summary);
-          logAudit(
-            actorName || 'Live Sheet Scanner',
-            actorName ? 'staff' : 'super_admin',
-            'SYNC_RAJSHAHI_SHEET',
-            'dataset',
-            'rajshahi_main',
-            summary
-          );
-          broadcastRealtimeEvent('inventory_updated', { reason: 'rajshahi_sheet_sync', summary });
+            changed = true;
+            summary = diff.hasChanges
+              ? diff.summary
+              : `Loaded ${nextLaptops.length} Rajshahi models (${totalUnits} units).`;
+            setAppSetting('rajshahi_last_sync_hash', nextHash);
+            setAppSetting('rajshahi_last_sync_at', nowIso);
+            setAppSetting('rajshahi_last_change_summary', summary);
+            logAudit(
+              actorName || 'Live Sheet Scanner',
+              actorName ? 'staff' : 'super_admin',
+              'SYNC_RAJSHAHI_SHEET',
+              'dataset',
+              'rajshahi_main',
+              summary
+            );
+            broadcastRealtimeEvent('inventory_updated', { reason: 'rajshahi_sheet_sync', summary });
+          }
         }
 
         // A successful unchanged scan is still a successful sync check.
@@ -628,7 +657,13 @@ async function syncRajshahiSheetNow(actorName?: string): Promise<{
       broadcastRealtimeEvent('sync_status_updated', { reason: 'rajshahi_scan_completed', summary }, false);
     }
 
-    return { changed, status: getRajshahiSyncStatus(), modelCount, totalUnits, summary };
+    return {
+      changed,
+      status: getRajshahiSyncStatus(),
+      modelCount,
+      totalUnits,
+      summary,
+    };
   })();
 
   inFlightRajshahiSync = task.finally(() => {
@@ -1770,6 +1805,8 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     const lookingPct = formatLookingPercentage(String(req.body?.lookingPct || ''));
     const customerName = String(req.body?.customerName || '').trim();
     const customerPhone = String(req.body?.customerPhone || '').trim();
+    const customerLocation = String(req.body?.customerLocation || '').trim().slice(0, 240);
+    const liveSellMessageOverride = String(req.body?.liveSellMessageOverride || '').trim().slice(0, 12000);
     const sourceName = String(req.body?.sourceName || '').trim();
     const dealBy = String(req.body?.dealBy || '').trim();
     const assistBy = String(req.body?.assistBy || '').trim();
@@ -1871,22 +1908,25 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
           memoPicStatus,
           dealTime,
           remarks,
+          customerLocation,
           remainingRajshahiQty: nextQty,
           remainingBranchStock: { RG: nextRg, NM: nextNm, JSM: nextJsm, CC: nextCc },
           monthlyBranchCounts,
           currencyMode: user.preferences.currencyFormat,
           timeZone,
         });
+        // A user may optionally calibrate the generated customer-facing post in the composer.
+        const finalLiveSellMessage = liveSellMessageOverride || liveSellMessage;
 
         const invoiceNo = `KG-${branch}-${Date.now().toString().slice(-6)}`;
         const saleInfo = db
           .prepare(`
             INSERT INTO sales (
               invoice_no, branch, laptop_id, brand, model, variant, serial_number,
-              sale_price, discount_amount, looking_pct, customer_name, customer_phone,
+              sale_price, discount_amount, looking_pct, customer_name, customer_phone, customer_location,
               remarks, live_sell_message, sheet_id, sheet_name, employee_id, employee_name, sold_at,
               status, idempotency_key
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)
           `)
           .run(
             invoiceNo,
@@ -1901,8 +1941,9 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
             lookingPct,
             customerName,
             customerPhone,
+            customerLocation,
             remarks,
-            liveSellMessage,
+            finalLiveSellMessage,
             sheetRow?.id ?? null,
             sheetRow?.name ?? 'Rajshahi Sheet',
             user.id,
@@ -1974,7 +2015,7 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
         return {
           saleId,
           invoiceNo,
-          liveSellMessage,
+          liveSellMessage: finalLiveSellMessage,
           remainingRajshahiQty: nextQty,
           monthlyBranchCounts,
           triggeredRefills,
@@ -2024,7 +2065,7 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     }
     if (q) {
       rows = rows.filter((r) => {
-        const hay = `${r.invoice_no} ${r.brand} ${r.model} ${r.variant} ${r.serial_number} ${r.customer_name} ${r.customer_phone} ${r.employee_name} ${r.remarks}`.toLowerCase();
+        const hay = `${r.invoice_no} ${r.brand} ${r.model} ${r.variant} ${r.serial_number} ${r.customer_name} ${r.customer_phone} ${r.customer_location || ''} ${r.employee_name} ${r.remarks}`.toLowerCase();
         return hay.includes(q);
       });
     }
@@ -2099,6 +2140,71 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     broadcastRealtimeEvent('inventory_updated', { reason: 'sale_voided', summary: String(saleRow.invoice_no) });
     res.json({ ok: true });
   });
+
+  // Permanent sale deletion is reserved exclusively for Super Admin.
+  // Both DELETE and POST aliases are supported so browser/proxy layers that
+  // interfere with DELETE still have a reliable same-origin mutation path.
+  const permanentlyDeleteSale = (req: AuthedRequest, res: Response): void => {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      res.status(400).json({ error: 'Invalid sale ID' });
+      return;
+    }
+
+    try {
+      const result = db.transaction(() => {
+        const saleRow = db.prepare('SELECT * FROM sales WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+        if (!saleRow) throw Object.assign(new Error('Sale transaction not found'), { status: 404 });
+
+        const branch = String(saleRow.branch) as BranchCode;
+        const laptopId = String(saleRow.laptop_id || '');
+        let inventoryRestored = false;
+
+        // A completed sale consumed one physical unit. Restore exactly one unit
+        // before removing the ledger row. A voided sale was already restocked.
+        if (saleRow.status === 'completed' && laptopId) {
+          const laptopRow = db.prepare('SELECT * FROM laptops WHERE id = ?').get(laptopId) as Record<string, unknown> | undefined;
+          if (laptopRow) {
+            const laptop = mapLaptopRow(laptopRow);
+            const nextRg = branch === 'RG' ? laptop.rg + 1 : laptop.rg;
+            const nextNm = branch === 'NM' ? laptop.nm + 1 : laptop.nm;
+            const nextJsm = branch === 'JSM' ? laptop.jsm + 1 : laptop.jsm;
+            const nextCc = branch === 'CC' ? laptop.cc + 1 : laptop.cc;
+            const nextQty = nextRg + nextNm + nextJsm + nextCc;
+            db.prepare('UPDATE laptops SET rg = ?, nm = ?, jsm = ?, cc = ?, qty = ?, total_value = ? WHERE id = ?').run(
+              nextRg, nextNm, nextJsm, nextCc, nextQty, (laptop.disPrice || laptop.askPrice) * nextQty, laptopId
+            );
+            updateDatasetCounts(laptop.datasetId);
+            const updatedRow = db.prepare('SELECT * FROM laptops WHERE id = ?').get(laptopId) as Record<string, unknown> | undefined;
+            if (updatedRow) syncRefillAlertsForLaptop(mapLaptopRow(updatedRow), new Date().toISOString());
+            inventoryRestored = true;
+          }
+        }
+
+        // Record the irreversible action inside the same transaction as deletion.
+        logAudit(
+          req.user!.fullName,
+          req.user!.role,
+          'DELETE_SALE',
+          'sale',
+          String(id),
+          `Permanently deleted ${String(saleRow.invoice_no)} (${branch} · ${String(saleRow.brand)} ${String(saleRow.model)}). Inventory restored: ${inventoryRestored ? 'yes' : 'no (already voided or laptop unavailable)'}.`
+        );
+        db.prepare('DELETE FROM sales WHERE id = ?').run(id);
+        return { inventoryRestored, invoiceNo: String(saleRow.invoice_no) };
+      })();
+
+      broadcastRealtimeEvent('inventory_updated', { reason: 'sale_deleted', summary: result.invoiceNo });
+      res.json({ ok: true, inventoryRestored: result.inventoryRestored, invoiceNo: result.invoiceNo });
+    } catch (error) {
+      const e = error as { status?: number; message?: string };
+      console.error('Permanent sale deletion failed:', { saleId: id, message: e.message || String(error) });
+      res.status(e.status || 500).json({ error: e.message || 'Failed to delete sale' });
+    }
+  };
+
+  app.delete('/api/sales/:id', requireAuth, requireRole('super_admin'), permanentlyDeleteSale);
+  app.post('/api/sales/:id/delete', requireAuth, requireRole('super_admin'), permanentlyDeleteSale);
 
   // ==========================================
   // ACCESSORIES & RAM/SSD (SEPARATE FROM LIVE SELL)
@@ -2503,6 +2609,7 @@ function mapSaleRow(r: Record<string, unknown>) {
     lookingPct: String(r.looking_pct),
     customerName: String(r.customer_name),
     customerPhone: String(r.customer_phone),
+    customerLocation: String(r.customer_location || ''),
     remarks: String(r.remarks),
     liveSellMessage: String(r.live_sell_message || ''),
     sheetId: r.sheet_id === null ? null : Number(r.sheet_id),

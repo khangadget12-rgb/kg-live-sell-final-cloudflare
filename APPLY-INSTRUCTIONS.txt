@@ -1,0 +1,44 @@
+KG LIVE SELL — DURABLE OBJECT ROW-READ HOTFIX
+============================================
+
+What this fixes
+---------------
+The Rajshahi auto-scanner previously loaded every row from the
+rajshahi_main laptops table before checking whether the Google Sheet had
+changed. It repeated that full-table read on every scheduled scan, even
+when the sheet was identical.
+
+This hotfix validates the fetched CSV, compares its hash with the last
+successfully synced hash, and takes a lightweight no-change path using the
+stored dataset summary. It reads the full laptop table only for the first
+sync, when the sheet changes, or when the inventory dataset is not seeded.
+
+Install
+-------
+1. Make a backup of your current GitHub repository or at least its server.ts.
+2. Extract this ZIP.
+3. Replace the repository-root server.ts with the server.ts from this ZIP.
+4. Commit and push to the same production branch used by Cloudflare Pages/
+   Workers (normally main), then let the existing automatic deployment run.
+5. Check Cloudflare Worker Observability after deployment.
+
+Important
+---------
+- This is based on the supplied KG-Live-Sell-2.5.3-GitHub-Update source.
+- Only server.ts needs to be replaced.
+- Do NOT delete or recreate the Durable Object, database, or APP_DB binding.
+- Do NOT replace wrangler.toml, cloudflare-worker.ts, server/db.ts, or
+  server/cloudflare-sqlite.ts for this hotfix.
+- No SQL migration is required. Existing users, sales, stock, settings,
+  and history are preserved.
+- The hotfix does not instantly reset a quota that Cloudflare has already
+  exhausted. On Workers Free, Durable Objects daily row-read limits reset
+  at 00:00 UTC (06:00 Bangladesh time). After the reset, this optimization
+  should greatly reduce repeated no-change scanner reads.
+
+Validation performed
+--------------------
+- Patch application was checked against both supplied server.ts variants.
+- The patched TypeScript file passed a syntax transpilation check.
+- A full project typecheck/build was not run because project dependencies
+  were not installed in this environment.
