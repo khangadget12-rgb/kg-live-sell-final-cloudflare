@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Search, Ban, Eye, X, Copy, Check } from 'lucide-react';
+import { Search, Ban, Eye, X, Copy, Check, Trash2 } from 'lucide-react';
 import { BRANCHES } from '../lib/types';
 import type { BranchCode, SaleRecord, UserPreferences, UserRole } from '../lib/types';
 import { formatCurrency } from '../lib/formatters';
@@ -14,6 +14,7 @@ interface SalesLedgerViewProps {
 
 export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRole, preferences, onRefresh }) => {
   const canVoid = userRole !== 'staff';
+  const canDelete = userRole === 'admin' || userRole === 'super_admin';
   const [branchFilter, setBranchFilter] = useState<BranchCode | 'ALL'>('ALL');
   const [query, setQuery] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState('');
@@ -25,6 +26,8 @@ export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRol
   const [voidReason, setVoidReason] = useState('');
   const [voidError, setVoidError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [deletingSaleId, setDeletingSaleId] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState('');
 
   const employees = useMemo(
     () => Array.from(new Set(sales.map((s) => s.employeeName))).sort(),
@@ -46,6 +49,21 @@ export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRol
       return true;
     });
   }, [sales, branchFilter, employeeFilter, dateFrom, dateTo, query]);
+
+  const handleDeleteSale = async (sale: SaleRecord) => {
+    setDeleteError('');
+    setDeletingSaleId(sale.id);
+    try {
+      // Deliberately no confirmation dialog: Admin/Super Admin delete in one click.
+      await api.deleteSale(sale.id);
+      if (selectedSale?.id === sale.id) setSelectedSale(null);
+      await onRefresh();
+    } catch (err) {
+      setDeleteError((err as Error).message || `Could not delete ${sale.invoiceNo}.`);
+    } finally {
+      setDeletingSaleId(null);
+    }
+  };
 
   const handleVoidSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -152,6 +170,12 @@ export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRol
         </div>
       </div>
 
+      {deleteError && (
+        <p role="alert" className="text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">
+          {deleteError}
+        </p>
+      )}
+
       {/* Sales Table */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
@@ -225,6 +249,19 @@ export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRol
                             className="p-1.5 rounded-lg border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30"
                           >
                             <Ban className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {canDelete && (
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteSale(s)}
+                            disabled={deletingSaleId === s.id}
+                            aria-label={`Delete ${s.invoiceNo}`}
+                            title={`Delete ${s.invoiceNo}`}
+                            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-red-300 dark:border-red-900 text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-50"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span className="text-[10px] font-semibold">{deletingSaleId === s.id ? 'Deleting' : 'Delete'}</span>
                           </button>
                         )}
                       </div>

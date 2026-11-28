@@ -91,6 +91,12 @@ async function apiFetch<T>(url: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  getHealth: () => apiFetch<{
+    ok: boolean;
+    version?: string;
+    features?: { monthlyBranchCalibration?: boolean; adminSalesDeletion?: boolean };
+  }>('/api/health'),
+
   getSyncVersion: () => apiFetch<{ syncVersion: number }>('/api/sync/version'),
 
   bootstrapStatus: () => apiFetch<{ needsSetup: boolean; hasEnvOverride: boolean }>('/api/auth/bootstrap-status'),
@@ -305,15 +311,27 @@ export const api = {
     return apiFetch<{ counts: MonthlyBranchSalesCounts }>(`/api/sales/monthly-counts${qs ? `?${qs}` : ''}`);
   },
 
-  calibrateMonthlyBranchCounts: (payload: {
+  calibrateMonthlyBranchCounts: async (payload: {
     soldAt?: string;
     timeZone?: string;
     counts: MonthlyBranchSalesCounts;
-  }) =>
-    apiFetch<{ monthKey: string; timeZone: string; counts: MonthlyBranchSalesCounts }>(
-      '/api/sales/monthly-counts/calibrate',
-      { method: 'POST', body: JSON.stringify(payload) }
-    ),
+  }) => {
+    const init = { method: 'POST', body: JSON.stringify(payload) };
+    try {
+      return await apiFetch<{ monthKey: string; timeZone: string; counts: MonthlyBranchSalesCounts }>(
+        '/api/sales/monthly-counts',
+        init
+      );
+    } catch (error) {
+      // Older cached frontends and staged deployments may only expose the
+      // original /calibrate suffix. Retry that compatibility route on 404.
+      if (!(error instanceof Error) || !(/404|not found/i.test(error.message))) throw error;
+      return apiFetch<{ monthKey: string; timeZone: string; counts: MonthlyBranchSalesCounts }>(
+        '/api/sales/monthly-counts/calibrate',
+        init
+      );
+    }
+  },
 
   createSale: (payload: {
     branch: BranchCode;
@@ -373,6 +391,11 @@ export const api = {
     apiFetch<{ ok: boolean }>(`/api/sales/${id}/void`, {
       method: 'POST',
       body: JSON.stringify({ reason }),
+    }),
+
+  deleteSale: (id: number) =>
+    apiFetch<{ ok: boolean; inventoryRestored: boolean; invoiceNo: string }>(`/api/sales/${id}/delete`, {
+      method: 'POST',
     }),
 
   listAccessories: () => apiFetch<{ accessories: AccessoryRecord[] }>('/api/accessories'),

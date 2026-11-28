@@ -896,6 +896,11 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     const sync = getRajshahiSyncStatus();
     res.json({
       ok: true,
+      version: '2.5.5',
+      features: {
+        monthlyBranchCalibration: true,
+        adminSalesDeletion: true,
+      },
       uptimeSeconds: Math.round(process.uptime()),
       db: 'connected',
       syncVersion: sync.syncVersion,
@@ -1865,7 +1870,7 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     res.json({ counts: getMonthlyBranchCounts(soldAtIso, timeZone) });
   });
 
-  app.post('/api/sales/monthly-counts/calibrate', requireAuth, requireRole('super_admin', 'admin'), (req: AuthedRequest, res) => {
+  const calibrateMonthlyBranchCounts = (req: AuthedRequest, res: Response): void => {
     const rawSoldAt = String(req.body?.soldAt || '').trim();
     const parsedSoldAt = rawSoldAt ? Date.parse(rawSoldAt) : NaN;
     const soldAtIso = Number.isFinite(parsedSoldAt) ? new Date(parsedSoldAt).toISOString() : new Date().toISOString();
@@ -1883,6 +1888,7 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
 
     try {
       const nowIso = new Date().toISOString();
+      const actualCounts = getActualMonthlyBranchCounts(soldAtIso, timeZone);
       const calibration = db.prepare(`
         INSERT INTO monthly_branch_sales_calibrations
           (month_key, time_zone, branch, count_offset, calibrated_at, calibrated_by)
@@ -1893,7 +1899,6 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
           calibrated_by = excluded.calibrated_by
       `);
       db.transaction(() => {
-        const actualCounts = getActualMonthlyBranchCounts(soldAtIso, timeZone);
         for (const branch of ['RG', 'NM', 'JSM', 'CC'] as const) {
           const desiredCount = Number(rawCounts[branch]);
           calibration.run(monthKey, timeZone, branch, desiredCount - actualCounts[branch], nowIso, req.user!.id);
@@ -1914,7 +1919,13 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
       console.error('Monthly branch sales calibration failed:', error);
       res.status(500).json({ error: 'Could not save branch sell count calibration.' });
     }
-  });
+  };
+
+  // POST on the existing monthly-counts resource is the canonical endpoint.
+  // Keep both aliases so previously cached clients and older deploy scripts work.
+  app.post('/api/sales/monthly-counts', requireAuth, requireRole('super_admin', 'admin'), calibrateMonthlyBranchCounts);
+  app.post('/api/sales/monthly-counts/calibrate', requireAuth, requireRole('super_admin', 'admin'), calibrateMonthlyBranchCounts);
+  app.post('/api/sales/calibrate-monthly-counts', requireAuth, requireRole('super_admin', 'admin'), calibrateMonthlyBranchCounts);
 
   app.post('/api/sales', requireAuth, (req: AuthedRequest, res) => {
     const user = req.user!;
@@ -2262,9 +2273,8 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     res.json({ ok: true });
   });
 
-  // Permanent sale deletion is reserved exclusively for Super Admin.
-  // Both DELETE and POST aliases are supported so browser/proxy layers that
-  // interfere with DELETE still have a reliable same-origin mutation path.
+  // Permanent sale deletion is available to Admin and Super Admin.
+  // Both DELETE and POST aliases are supported; the UI uses POST for reliability.
   const permanentlyDeleteSale = (req: AuthedRequest, res: Response): void => {
     const id = Number(req.params.id);
     if (!Number.isSafeInteger(id) || id <= 0) {
@@ -2324,8 +2334,8 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     }
   };
 
-  app.delete('/api/sales/:id', requireAuth, requireRole('super_admin'), permanentlyDeleteSale);
-  app.post('/api/sales/:id/delete', requireAuth, requireRole('super_admin'), permanentlyDeleteSale);
+  app.delete('/api/sales/:id', requireAuth, requireRole('super_admin', 'admin'), permanentlyDeleteSale);
+  app.post('/api/sales/:id/delete', requireAuth, requireRole('super_admin', 'admin'), permanentlyDeleteSale);
 
   // ==========================================
   // ACCESSORIES & RAM/SSD (SEPARATE FROM LIVE SELL)

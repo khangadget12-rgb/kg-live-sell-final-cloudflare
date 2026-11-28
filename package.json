@@ -1,12 +1,13 @@
 {
   "name": "khan-gadget-kg-live-sell-final",
   "private": true,
-  "version": "2.5.4",
+  "version": "2.5.5",
   "type": "module",
   "scripts": {
     "build": "node scripts/prepare-cloudflare-dependencies.mjs && vite build",
     "deploy": "npm run build && npx wrangler deploy",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/lib/domain.test.ts src/lib/sheetSync.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

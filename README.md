@@ -1,6 +1,6 @@
-# Khan Gadget — KG Live Sell (Cloudflare Edition 2.5.4)
+# Khan Gadget — KG Live Sell (Cloudflare Edition 2.5.5)
 
-Complete browser-deployed Cloudflare Workers release. Read `START-HERE-CLOUDFLARE.md` before deployment.
+Complete browser-deployed Cloudflare Workers release. Read `START-HERE-2.5.5.md` before deployment.
 
 ## Cloudflare architecture
 
@@ -16,7 +16,7 @@ The Cloudflare logs supplied with this project identify the running Worker as `k
 - Update the same GitHub repository and production branch already connected to Cloudflare Workers Builds.
 - Keep the current Worker, Durable Object namespace/binding (`APP_DB` → `KGAppDatabase`), migration identity (`v1`), environment variables and secrets.
 - Do not create a replacement Worker, delete/recreate the Durable Object, or reset the database.
-- Back up the application database before deployment and let migration 5 apply automatically on startup.
+- Back up the application database before deployment and let migrations 5–6 apply automatically on startup.
 - Preserve the existing Cloudflare build settings; deploy the complete repository, not a partial set of changed files.
 
 If the Worker shown in the Cloudflare dashboard is not `kg-live-sell-final-cloudflare`, stop before deployment and update `wrangler.toml` to the exact existing Worker name. Do not deploy under a different name as a way to update the current database.

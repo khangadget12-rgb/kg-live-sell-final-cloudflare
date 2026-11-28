@@ -1,4 +1,4 @@
-# KG Live Sell 2.5.4 — Existing Cloudflare Deployment Update
+# KG Live Sell 2.5.5 — Existing Cloudflare Deployment Update
 
 This package is an update to the existing KG Live Sell Cloudflare application, not instructions to create a second Worker or database.
 
@@ -14,7 +14,7 @@ This package is an update to the existing KG Live Sell Cloudflare application, n
 
 Let the existing Cloudflare Workers Builds pipeline build and deploy the update. If deploying manually, use the repository's existing build and deploy procedure. Do not change the Worker name, `APP_DB` binding, `KGAppDatabase` class, or `v1` migration tag.
 
-On first startup, database migration 5 runs automatically. It adds `sales.customer_location` only if missing and creates `monthly_branch_sales_calibrations`; existing sales and inventory rows are retained. Calibration records store count offsets and audit information; historical sale records are not rewritten.
+On first startup, database migrations 5–6 run automatically. It adds `sales.customer_location` only if missing and creates `monthly_branch_sales_calibrations`; existing sales and inventory rows are retained. Calibration records store count offsets and audit information; historical sale records are not rewritten. Migration 6 also repairs the calibration table and customer-location column if either is missing despite an existing migration marker.
 
 ## Verify after deployment
 
@@ -23,7 +23,7 @@ On first startup, database migration 5 runs automatically. It adds `sales.custom
 3. As Admin or Super Admin, open Live Sell → **Adjust Branch Counts** and verify the four branch values load. Do not save a calibration unless you intend to change the displayed monthly totals.
 4. Open Laptop Finder and verify the price sliders and new filters are available.
 5. In Live Sell, enter a customer location in the optional field, verify it appears in the preview, and confirm a real sale only when appropriate. Check the location in Sales Ledger.
-6. With multiple sessions open, confirm a sale or calibration refreshes the monthly branch counters across sessions.
+6. With multiple sessions open, confirm a sale or calibration refreshes the monthly branch counters across sessions. Confirm `/api/health` reports version `2.5.5` and both new feature flags.
 
 ## Safety notes
 

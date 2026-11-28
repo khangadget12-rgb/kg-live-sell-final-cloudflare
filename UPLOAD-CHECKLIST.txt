@@ -1,4 +1,4 @@
-KG LIVE SELL 2.5.4 — EXISTING CLOUDFLARE DEPLOYMENT UPDATE
+KG LIVE SELL 2.5.5 — EXISTING CLOUDFLARE DEPLOYMENT UPDATE
 
 [ ] Back up the existing production Durable Object database using the app's backup feature.
 [ ] Confirm the current Worker name in Cloudflare Dashboard. Supplied logs identify kg-live-sell-final-cloudflare.
@@ -16,3 +16,6 @@ KG LIVE SELL 2.5.4 — EXISTING CLOUDFLARE DEPLOYMENT UPDATE
 [ ] Verify active sessions refresh branch counts after sale/calibration events.
 [ ] Confirm login, sales, ledger, inventory, accounts, activity, and backup/restore still work.
 [ ] Keep the pre-deployment backup until all checks pass.
+
+[ ] Confirm /api/health reports version 2.5.5 and calibration/delete feature flags are true.
+[ ] Confirm Admin and Super Admin can delete a test ledger sale with one click.

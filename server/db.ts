@@ -386,6 +386,35 @@ export function runMigrations(): void {
     })();
   }
 
+  // Defensive reconciliation for the monthly calibration schema. This also
+  // repairs installations where the migration marker exists but the table was
+  // not created (for example, after an interrupted/manual partial deployment).
+  const reconciledSalesCols = db.prepare('PRAGMA table_info(sales)').all() as Array<{ name: string }>;
+  if (!reconciledSalesCols.some((column) => column.name === 'customer_location')) {
+    db.exec("ALTER TABLE sales ADD COLUMN customer_location TEXT NOT NULL DEFAULT ''");
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS monthly_branch_sales_calibrations (
+      month_key TEXT NOT NULL,
+      time_zone TEXT NOT NULL DEFAULT 'UTC',
+      branch TEXT NOT NULL CHECK(branch IN ('RG', 'NM', 'JSM', 'CC')),
+      count_offset INTEGER NOT NULL DEFAULT 0,
+      calibrated_at TEXT NOT NULL,
+      calibrated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      PRIMARY KEY (month_key, time_zone, branch)
+    );
+    CREATE INDEX IF NOT EXISTS idx_sales_calibration_month
+      ON monthly_branch_sales_calibrations(month_key, time_zone);
+  `);
+
+  if (!applied.has(6)) {
+    db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+      6,
+      'monthly_branch_sales_calibration_schema_reconciliation',
+      new Date().toISOString()
+    );
+  }
+
   // Store exported backup snapshots in the same SQLite-backed Durable Object.
   // Chunking keeps each individual SQL row well below the platform's row-size limit.
   db.exec(`
