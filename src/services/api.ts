@@ -85,7 +85,11 @@ async function apiFetch<T>(url: string, init: RequestInit = {}): Promise<T> {
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error((data as { error?: string }).error || `Request failed (${res.status})`);
+    const failure = data as { error?: string; detail?: string; code?: string };
+    const baseMessage = failure.error || `Request failed (${res.status})`;
+    const detail = failure.detail ? ` — ${failure.detail}` : '';
+    const code = failure.code ? ` [${failure.code}]` : '';
+    throw new Error(`${baseMessage}${detail}${code}`);
   }
   return data as T;
 }
@@ -316,21 +320,30 @@ export const api = {
     timeZone?: string;
     counts: MonthlyBranchSalesCounts;
   }) => {
-    const init = { method: 'POST', body: JSON.stringify(payload) };
-    try {
-      return await apiFetch<{ monthKey: string; timeZone: string; counts: MonthlyBranchSalesCounts }>(
-        '/api/sales/monthly-counts',
-        init
-      );
-    } catch (error) {
-      // Older cached frontends and staged deployments may only expose the
-      // original /calibrate suffix. Retry that compatibility route on 404.
-      if (!(error instanceof Error) || !(/404|not found/i.test(error.message))) throw error;
-      return apiFetch<{ monthKey: string; timeZone: string; counts: MonthlyBranchSalesCounts }>(
-        '/api/sales/monthly-counts/calibrate',
-        init
-      );
+    const init: RequestInit = { method: 'POST', body: JSON.stringify(payload), cache: 'no-store' };
+    const paths = [
+      '/api/sales/monthly-counts',
+      '/api/sales/monthly-counts/calibrate',
+      '/api/sales/calibrate-monthly-counts',
+    ];
+    let lastError: unknown;
+    for (const path of paths) {
+      try {
+        return await apiFetch<{
+          monthKey: string;
+          timeZone: string;
+          counts: MonthlyBranchSalesCounts;
+          auditLogged?: boolean;
+          auditWarning?: string;
+        }>(path, init);
+      } catch (error) {
+        lastError = error;
+        // Try the next documented alias only for a missing route. Never hide
+        // authorization, validation, or database failures behind a retry.
+        if (!(error instanceof Error) || !(/404|not found/i.test(error.message))) throw error;
+      }
     }
+    throw lastError instanceof Error ? lastError : new Error('No calibration API route is available.');
   },
 
   createSale: (payload: {

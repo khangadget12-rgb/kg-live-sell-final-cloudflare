@@ -290,24 +290,31 @@ function getMonthUtcBounds(monthKey: string, timeZone: string): { start: string;
 }
 
 function getActualMonthlyBranchCounts(soldAtIso: string, timeZone?: string): MonthlyBranchSalesCounts {
-  const counts: MonthlyBranchSalesCounts = { RG: 0, NM: 0, JSM: 0, CC: 0 };
   const normalizedTimeZone = normalizeSalesTimeZone(timeZone);
   const targetYm = getYearMonthKey(soldAtIso, normalizedTimeZone);
   const targetMs = Date.parse(soldAtIso) || Date.now();
   const targetUpperBound = new Date(targetMs).toISOString();
   const bounds = getMonthUtcBounds(targetYm, normalizedTimeZone);
-  const countForBranch = db.prepare(`
-    SELECT COUNT(*) AS total
-    FROM sales
-    WHERE branch = ? AND status = 'completed'
-      AND sold_at >= ? AND sold_at < ? AND sold_at <= ?
-  `);
 
-  for (const branch of ['RG', 'NM', 'JSM', 'CC'] as const) {
-    const row = countForBranch.get(branch, bounds.start, bounds.end, targetUpperBound) as { total: number };
-    counts[branch] = Number(row?.total || 0);
-  }
-  return counts;
+  // One range scan replaces four independent COUNT queries. The matching
+  // (status, sold_at, branch) index is added by migration 7.
+  const row = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN branch = 'RG' THEN 1 ELSE 0 END), 0) AS RG,
+      COALESCE(SUM(CASE WHEN branch = 'NM' THEN 1 ELSE 0 END), 0) AS NM,
+      COALESCE(SUM(CASE WHEN branch = 'JSM' THEN 1 ELSE 0 END), 0) AS JSM,
+      COALESCE(SUM(CASE WHEN branch = 'CC' THEN 1 ELSE 0 END), 0) AS CC
+    FROM sales
+    WHERE status = 'completed'
+      AND sold_at >= ? AND sold_at < ? AND sold_at <= ?
+  `).get(bounds.start, bounds.end, targetUpperBound) as Partial<MonthlyBranchSalesCounts> | undefined;
+
+  return {
+    RG: Number(row?.RG || 0),
+    NM: Number(row?.NM || 0),
+    JSM: Number(row?.JSM || 0),
+    CC: Number(row?.CC || 0),
+  };
 }
 
 function getMonthlyBranchCounts(soldAtIso: string, timeZone?: string): MonthlyBranchSalesCounts {
@@ -896,7 +903,7 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     const sync = getRajshahiSyncStatus();
     res.json({
       ok: true,
-      version: '2.5.5',
+      version: '2.5.6',
       features: {
         monthlyBranchCalibration: true,
         adminSalesDeletion: true,
@@ -1882,42 +1889,72 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
       const value = Number(rawCounts[branch as BranchCode]);
       return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000;
     })) {
-      res.status(400).json({ error: 'Provide a whole-number sell count from 0 to 1,000,000 for every branch.' });
+      res.status(400).json({
+        error: 'Provide a whole-number sell count from 0 to 1,000,000 for every branch.',
+        code: 'INVALID_BRANCH_COUNTS',
+      });
       return;
     }
 
     try {
       const nowIso = new Date().toISOString();
       const actualCounts = getActualMonthlyBranchCounts(soldAtIso, timeZone);
-      const calibration = db.prepare(`
-        INSERT INTO monthly_branch_sales_calibrations
-          (month_key, time_zone, branch, count_offset, calibrated_at, calibrated_by)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(month_key, time_zone, branch) DO UPDATE SET
-          count_offset = excluded.count_offset,
-          calibrated_at = excluded.calibrated_at,
-          calibrated_by = excluded.calibrated_by
-      `);
-      db.transaction(() => {
-        for (const branch of ['RG', 'NM', 'JSM', 'CC'] as const) {
-          const desiredCount = Number(rawCounts[branch]);
-          calibration.run(monthKey, timeZone, branch, desiredCount - actualCounts[branch], nowIso, req.user!.id);
-        }
-      })();
+      const branches = ['RG', 'NM', 'JSM', 'CC'] as const;
+      const desiredCounts: MonthlyBranchSalesCounts = {
+        RG: Number(rawCounts.RG),
+        NM: Number(rawCounts.NM),
+        JSM: Number(rawCounts.JSM),
+        CC: Number(rawCounts.CC),
+      };
 
-      logAudit(
-        req.user!.fullName,
-        req.user!.role,
-        'CALIBRATE_MONTHLY_BRANCH_SELL_COUNTS',
-        'sales_counts',
-        `${monthKey}:${timeZone}`,
-        `Set monthly branch sell counts: RG=${Number(rawCounts.RG)}, NM=${Number(rawCounts.NM)}, JSM=${Number(rawCounts.JSM)}, CC=${Number(rawCounts.CC)}`
-      );
+      // Store the requested monthly baseline as an offset from real completed
+      // sales. A single multi-row statement is atomic and avoids dependence on
+      // Durable Object transaction wrappers or SQLite UPSERT target metadata.
+      const placeholders = branches.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+      const values = branches.flatMap((branch) => [
+        monthKey,
+        timeZone,
+        branch,
+        desiredCounts[branch] - actualCounts[branch],
+        nowIso,
+        req.user!.id,
+      ]);
+      db.prepare(`
+        INSERT OR REPLACE INTO monthly_branch_sales_calibrations
+          (month_key, time_zone, branch, count_offset, calibrated_at, calibrated_by)
+        VALUES ${placeholders}
+      `).run(...values);
+
+      let auditLogged = true;
+      let auditWarning: string | undefined;
+      try {
+        logAudit(
+          req.user!.fullName,
+          req.user!.role,
+          'CALIBRATE_MONTHLY_BRANCH_SELL_COUNTS',
+          'sales_counts',
+          `${monthKey}:${timeZone}`,
+          `Set monthly branch sell counts: RG=${desiredCounts.RG}, NM=${desiredCounts.NM}, JSM=${desiredCounts.JSM}, CC=${desiredCounts.CC}`
+        );
+      } catch (auditError) {
+        auditLogged = false;
+        auditWarning = auditError instanceof Error ? auditError.message : String(auditError);
+        console.error('Monthly branch calibration saved but audit logging failed:', auditError);
+      }
+
       broadcastRealtimeEvent('sales_counts_updated', { monthKey, timeZone });
-      res.json({ monthKey, timeZone, counts: getMonthlyBranchCounts(soldAtIso, timeZone) });
+      // Return the values written, rather than issuing another full count read
+      // after the save. This prevents a successful write being reported as a
+      // failure merely because a follow-up read hits a transient quota limit.
+      res.json({ monthKey, timeZone, counts: desiredCounts, auditLogged, auditWarning });
     } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
       console.error('Monthly branch sales calibration failed:', error);
-      res.status(500).json({ error: 'Could not save branch sell count calibration.' });
+      res.status(500).json({
+        error: 'Could not save branch sell count calibration.',
+        code: 'CALIBRATION_SAVE_FAILED',
+        detail,
+      });
     }
   };
 

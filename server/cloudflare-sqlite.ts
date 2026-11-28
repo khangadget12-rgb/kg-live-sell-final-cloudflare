@@ -51,10 +51,20 @@ export function createCloudflareSqliteCompat(storageSource: SqlStorageLike | (()
         run(...args: unknown[]) {
           const [query, bindings] = normalizeQueryAndBindings(sql, args);
           const cursor = getStorage().exec(query, ...bindings);
-          const last = getStorage().exec('SELECT last_insert_rowid() AS id').toArray()[0];
+          // Reading last_insert_rowid() for every UPDATE/DELETE/INSERT wastes
+          // a Durable Object SQL row read even when callers only use `changes`.
+          // Resolve it lazily so only code that actually needs the generated
+          // id pays for the additional SQL read.
+          let resolvedLastInsertRowid: number | undefined;
           return {
             changes: Number(cursor.rowsWritten ?? 0),
-            lastInsertRowid: Number(last?.id ?? 0),
+            get lastInsertRowid() {
+              if (resolvedLastInsertRowid === undefined) {
+                const last = getStorage().exec('SELECT last_insert_rowid() AS id').toArray()[0];
+                resolvedLastInsertRowid = Number(last?.id ?? 0);
+              }
+              return resolvedLastInsertRowid;
+            },
           };
         },
       };

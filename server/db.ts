@@ -415,6 +415,20 @@ export function runMigrations(): void {
     );
   }
 
+  if (!applied.has(7)) {
+    db.transaction(() => {
+      // Supports the single-pass monthly branch aggregation used by calibration.
+      db.exec('CREATE INDEX IF NOT EXISTS idx_sales_status_date_branch ON sales(status, sold_at, branch)');
+      db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(
+        7,
+        'monthly_sales_count_aggregate_index',
+        new Date().toISOString()
+      );
+    })();
+  } else {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_sales_status_date_branch ON sales(status, sold_at, branch)');
+  }
+
   // Store exported backup snapshots in the same SQLite-backed Durable Object.
   // Chunking keeps each individual SQL row well below the platform's row-size limit.
   db.exec(`

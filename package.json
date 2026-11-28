@@ -1,7 +1,7 @@
 {
   "name": "khan-gadget-kg-live-sell-final",
   "private": true,
-  "version": "2.5.5",
+  "version": "2.5.6",
   "type": "module",
   "scripts": {
     "build": "node scripts/prepare-cloudflare-dependencies.mjs && vite build",

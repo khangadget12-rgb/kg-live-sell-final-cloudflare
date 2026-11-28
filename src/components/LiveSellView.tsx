@@ -165,19 +165,21 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
       setMonthlyCounts(result.counts);
       setCalibrationCounts(result.counts);
       calibrationDirtyRef.current = false;
-      setCalibrationNotice(`Saved ${result.monthKey} branch counts. New sales will continue increasing these values.`);
+      setCalibrationNotice(result.auditLogged === false
+        ? `Saved ${result.monthKey} branch counts, but audit logging reported: ${result.auditWarning || 'unknown error'}. New sales will continue increasing these values.`
+        : `Saved ${result.monthKey} branch counts. New sales will continue increasing these values.`);
     } catch (err) {
       const message = (err as Error).message || 'Could not save branch counts.';
       if (/404|not found/i.test(message)) {
         try {
           const health = await api.getHealth();
-          if (health.version !== '2.5.5' || health.features?.monthlyBranchCalibration !== true) {
-            setCalibrationNotice(`The backend Worker is not updated for calibration (reported version: ${health.version || 'unknown'}). Deploy the complete 2.5.5 project to the existing Worker, then reload this page.`);
+          if (health.version !== '2.5.6' || health.features?.monthlyBranchCalibration !== true) {
+            setCalibrationNotice(`The backend Worker is not updated for calibration (reported version: ${health.version || 'unknown'}). Deploy the complete 2.5.6 project to the existing Worker, then reload this page.`);
           } else {
-            setCalibrationNotice('The Worker reports calibration support but returned 404. Confirm this domain is connected to the same 2.5.5 Worker, then hard-refresh the app.');
+            setCalibrationNotice('The Worker reports calibration support but returned 404. Confirm this domain is connected to the same 2.5.6 Worker, then hard-refresh the app.');
           }
         } catch {
-          setCalibrationNotice(`${message}. The backend version could not be checked; deploy the complete 2.5.5 project to the existing Worker.`);
+          setCalibrationNotice(`${message}. The backend version could not be checked; deploy the complete 2.5.6 project to the existing Worker.`);
         }
       } else {
         setCalibrationNotice(message);
