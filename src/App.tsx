@@ -277,8 +277,13 @@ export default function App() {
         notificationPollRef.current?.();
         reloadAfterSync(user).catch(() => {});
         setSyncPulseVersion((v) => v + 1);
+        if (evt.type === 'inventory_updated' && ['sale_recorded', 'sale_voided', 'sale_deleted'].includes(evt.reason || '')) {
+          window.dispatchEvent(new Event('kg-sales-counts-updated'));
+        }
       } else if (evt.type === 'sync_status_updated') {
         api.getRajshahiSyncStatus().then((r) => setRajshahiSyncStatus(r.status)).catch(() => {});
+      } else if (evt.type === 'sales_counts_updated') {
+        window.dispatchEvent(new Event('kg-sales-counts-updated'));
       }
     });
     return () => {

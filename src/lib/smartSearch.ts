@@ -7,9 +7,13 @@ export interface SearchFilterState {
   minPrice: number | null;
   maxPrice: number | null;
   ramGb: number | null;
+  minRamGb: number | null;
   minStorageGb: number | null;
   cpuFamily: string | null;
   cpuGen: number | null;
+  minCpuGen: number | null;
+  minDisplayInches: number | null;
+  operatingSystem: string | null;
   memoryType: string | null;
   displayFeatures: ('touch' | 'x360' | 'oled' | '120hz+')[];
   gpuFilter: 'all' | 'dedicated' | 'rtx' | 'gtx';
@@ -30,9 +34,13 @@ export const EMPTY_FILTERS: SearchFilterState = {
   minPrice: null,
   maxPrice: null,
   ramGb: null,
+  minRamGb: null,
   minStorageGb: null,
   cpuFamily: null,
   cpuGen: null,
+  minCpuGen: null,
+  minDisplayInches: null,
+  operatingSystem: null,
   memoryType: null,
   displayFeatures: [],
   gpuFilter: 'all',
@@ -383,8 +391,12 @@ export function filterLaptops(
     if (effective.minPrice !== null && (targetPrice <= 0 || targetPrice < effective.minPrice)) return false;
     if (effective.maxPrice !== null && (targetPrice <= 0 || targetPrice > effective.maxPrice)) return false;
     if (effective.ramGb !== null && l.ramGb !== effective.ramGb) return false;
+    if (effective.minRamGb !== null && l.ramGb < effective.minRamGb) return false;
     if (effective.minStorageGb !== null && l.storageGb < effective.minStorageGb) return false;
     if (effective.cpuGen !== null && l.cpuGen !== effective.cpuGen) return false;
+    if (effective.minCpuGen !== null && (l.cpuGen ?? 0) < effective.minCpuGen) return false;
+    if (effective.minDisplayInches !== null && (l.displayInches ?? 0) < effective.minDisplayInches) return false;
+    if (effective.operatingSystem && !l.os.toLowerCase().includes(effective.operatingSystem.toLowerCase())) return false;
 
     if (effective.cpuFamily) {
       const fam = effective.cpuFamily.toLowerCase();

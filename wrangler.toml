@@ -1,4 +1,4 @@
-name = "kg-live-sell-final"
+name = "kg-live-sell-final-cloudflare"
 main = "cloudflare-worker.ts"
 compatibility_date = "2026-11-24"
 compatibility_flags = ["nodejs_compat"]

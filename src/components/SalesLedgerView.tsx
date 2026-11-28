@@ -40,7 +40,7 @@ export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRol
       if (dateFrom && day < dateFrom) return false;
       if (dateTo && day > dateTo) return false;
       if (q) {
-        const hay = `${s.invoiceNo} ${s.brand} ${s.model} ${s.variant} ${s.serialNumber} ${s.customerName} ${s.customerPhone} ${s.employeeName} ${s.remarks} ${s.sheetName}`.toLowerCase();
+        const hay = `${s.invoiceNo} ${s.brand} ${s.model} ${s.variant} ${s.serialNumber} ${s.customerName} ${s.customerPhone} ${s.customerLocation || ''} ${s.employeeName} ${s.remarks} ${s.sheetName}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -261,6 +261,7 @@ export const SalesLedgerView: React.FC<SalesLedgerViewProps> = ({ sales, userRol
               <div><dt className="text-slate-500">Looking %</dt><dd className="font-mono">{selectedSale.lookingPct || '—'}</dd></div>
               <div><dt className="text-slate-500">Serial Number</dt><dd className="font-mono">{selectedSale.serialNumber || '—'}</dd></div>
               <div><dt className="text-slate-500">Customer</dt><dd>{selectedSale.customerName || 'Walk-in'} {selectedSale.customerPhone}</dd></div>
+              <div><dt className="text-slate-500">Customer Location</dt><dd>{selectedSale.customerLocation || '—'}</dd></div>
               <div><dt className="text-slate-500">Employee</dt><dd>{selectedSale.employeeName}</dd></div>
               <div className="col-span-2"><dt className="text-slate-500">Selected Google Sheet</dt><dd>{selectedSale.sheetName}</dd></div>
               <div className="col-span-2"><dt className="text-slate-500">Remarks</dt><dd>{selectedSale.remarks || '—'}</dd></div>

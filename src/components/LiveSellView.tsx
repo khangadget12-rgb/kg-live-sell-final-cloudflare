@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, AlertCircle, Search, Copy, Check } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { CheckCircle2, AlertCircle, Search, Copy, Check, Settings2, Save, RefreshCw } from 'lucide-react';
 import { BRANCHES, BRANCH_ORDER } from '../lib/types';
 import type {
   BranchCode,
@@ -22,6 +22,14 @@ import { api } from '../services/api';
 function toLocalDatetimeInputValue(date = new Date()): string {
   const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+
+function getSalesMonthKey(date: Date, timeZone?: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit' }).formatToParts(date);
+  const year = parts.find((part) => part.type === 'year')?.value || '';
+  const month = parts.find((part) => part.type === 'month')?.value || '';
+  return `${year}-${month}`;
 }
 
 function formatRajshahiBreakdown(laptop: LaptopRecord): string {
@@ -63,7 +71,9 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
   const [dealTime, setDealTime] = useState('');
   const [adapterNote, setAdapterNote] = useState('');
   const [remarks, setRemarks] = useState('');
+  const [customerLocation, setCustomerLocation] = useState('');
   const [saleTimestamp, setSaleTimestamp] = useState(() => toLocalDatetimeInputValue());
+  const [saleTimestampManuallySet, setSaleTimestampManuallySet] = useState(false);
 
   const [monthlyCounts, setMonthlyCounts] = useState<MonthlyBranchSalesCounts>({
     RG: 0,
@@ -71,6 +81,18 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
     JSM: 0,
     CC: 0,
   });
+  const [calibrationCounts, setCalibrationCounts] = useState<MonthlyBranchSalesCounts>({
+    RG: 0,
+    NM: 0,
+    JSM: 0,
+    CC: 0,
+  });
+  const calibrationDirtyRef = useRef(false);
+  const [calibrationOpen, setCalibrationOpen] = useState(false);
+  const [calibrationSaving, setCalibrationSaving] = useState(false);
+  const [monthlyCountsLoading, setMonthlyCountsLoading] = useState(true);
+  const [calibrationNotice, setCalibrationNotice] = useState('');
+  const canCalibrateCounts = user.role === 'admin' || user.role === 'super_admin';
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -102,12 +124,52 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
   }, []);
 
   useEffect(() => {
-    const soldAtIso = saleTimestamp ? new Date(saleTimestamp).toISOString() : new Date().toISOString();
-    api
-      .getMonthlyBranchCounts(soldAtIso, clientTimeZone)
-      .then((r) => setMonthlyCounts(r.counts))
-      .catch(() => {});
-  }, [saleTimestamp, clientTimeZone]);
+    const refreshMonthlyCounts = (preferCurrentCutoff = false) => {
+      const selectedDate = saleTimestamp ? new Date(saleTimestamp) : new Date();
+      const safeSelectedDate = Number.isNaN(selectedDate.getTime()) ? new Date() : selectedDate;
+      const now = new Date();
+      // An idle tab's datetime-local value becomes stale. When another user records
+      // a sale, refresh through now if the selected date is in the current month.
+      const queryDate = preferCurrentCutoff && !saleTimestampManuallySet &&
+        getSalesMonthKey(safeSelectedDate, clientTimeZone) === getSalesMonthKey(now, clientTimeZone)
+        ? now
+        : safeSelectedDate;
+      setMonthlyCountsLoading(true);
+      api
+        .getMonthlyBranchCounts(queryDate.toISOString(), clientTimeZone)
+        .then((r) => {
+          setMonthlyCounts(r.counts);
+          if (!calibrationDirtyRef.current) setCalibrationCounts(r.counts);
+        })
+        .catch(() => {})
+        .finally(() => setMonthlyCountsLoading(false));
+    };
+    const onCountsUpdated = () => refreshMonthlyCounts(true);
+    refreshMonthlyCounts();
+    window.addEventListener('kg-sales-counts-updated', onCountsUpdated);
+    return () => window.removeEventListener('kg-sales-counts-updated', onCountsUpdated);
+  }, [saleTimestamp, saleTimestampManuallySet, clientTimeZone]);
+
+  const handleSaveCalibration = async () => {
+    setCalibrationSaving(true);
+    setCalibrationNotice('');
+    try {
+      const soldAtIso = saleTimestamp ? new Date(saleTimestamp).toISOString() : new Date().toISOString();
+      const result = await api.calibrateMonthlyBranchCounts({
+        soldAt: soldAtIso,
+        timeZone: clientTimeZone,
+        counts: calibrationCounts,
+      });
+      setMonthlyCounts(result.counts);
+      setCalibrationCounts(result.counts);
+      calibrationDirtyRef.current = false;
+      setCalibrationNotice(`Saved ${result.monthKey} branch counts. New sales will continue increasing these values.`);
+    } catch (err) {
+      setCalibrationNotice((err as Error).message || 'Could not save branch counts.');
+    } finally {
+      setCalibrationSaving(false);
+    }
+  };
 
   // Auto-suggest all available devices across Rajshahi (not branchwise)
   const availableRajshahiLaptops = useMemo(() => {
@@ -163,6 +225,7 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
       memoPicStatus,
       dealTime,
       remarks,
+      customerLocation,
       remainingRajshahiQty: nextTotal,
       remainingBranchStock: nextBranchStock,
       monthlyBranchCounts: previewCounts,
@@ -184,6 +247,7 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
     memoPicStatus,
     dealTime,
     remarks,
+    customerLocation,
     user.preferences.currencyFormat,
     clientTimeZone,
   ]);
@@ -253,6 +317,7 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
         memoPicStatus: memoPicStatus.trim(),
         dealTime: dealTime.trim(),
         remarks: remarks.trim(),
+        customerLocation: customerLocation.trim(),
         adapterNote: adapterNote.trim(),
         timeZone: clientTimeZone,
         soldAt: saleTimestamp ? new Date(saleTimestamp).toISOString() : undefined,
@@ -282,7 +347,11 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
       setDealTime('');
       setAdapterNote('');
       setRemarks('');
+      setCustomerLocation('');
+      setCalibrationCounts(res.monthlyBranchCounts);
+      calibrationDirtyRef.current = false;
       setSaleTimestamp(toLocalDatetimeInputValue());
+      setSaleTimestampManuallySet(false);
 
       await onSaleCompleted();
       const myRes = await api.listMySales();
@@ -339,6 +408,75 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
             </div>
           )}
         </div>
+      )}
+
+      {canCalibrateCounts && (
+        <section className="bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-900/70 rounded-xl p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <Settings2 className="w-4 h-4 mt-0.5 text-amber-600 dark:text-amber-400" />
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Branch Sell Count Calibration</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Admin and Super Admin adjustment for the month selected in the sale date. Existing sale records are not changed.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCalibrationOpen((open) => !open)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-amber-300 dark:border-amber-800 text-xs font-semibold text-amber-800 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+            >
+              {calibrationOpen ? 'Hide Calibration' : 'Adjust Branch Counts'}
+            </button>
+          </div>
+          {calibrationOpen && (
+            <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {BRANCHES.map((item) => (
+                  <div key={item.code}>
+                    <label htmlFor={`calibrate-${item.code}`} className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">
+                      {item.code} · {item.name}
+                    </label>
+                    <input
+                      id={`calibrate-${item.code}`}
+                      type="number"
+                      min={0}
+                      max={1000000}
+                      step={1}
+                      inputMode="numeric"
+                      value={calibrationCounts[item.code]}
+                      onChange={(event) => {
+                        const next = event.target.value === '' ? 0 : Math.max(0, Math.min(1000000, Math.floor(Number(event.target.value) || 0)));
+                        setCalibrationCounts((previous) => ({ ...previous, [item.code]: next }));
+                        calibrationDirtyRef.current = true;
+                        setCalibrationNotice('');
+                      }}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono text-sm"
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Values are saved as a monthly baseline plus an adjustment, so each new completed sale still increments the branch count.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleSaveCalibration}
+                  disabled={calibrationSaving || monthlyCountsLoading}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold disabled:opacity-60"
+                >
+                  {calibrationSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                  {monthlyCountsLoading ? 'Loading Counts…' : calibrationSaving ? 'Saving…' : 'Save Branch Counts'}
+                </button>
+              </div>
+              {calibrationNotice && (
+                <p role="status" className="text-xs text-slate-700 dark:text-slate-300">{calibrationNotice}</p>
+              )}
+            </div>
+          )}
+        </section>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -609,10 +747,25 @@ export const LiveSellView: React.FC<LiveSellViewProps> = ({
                   id="sale-datetime"
                   type="datetime-local"
                   value={saleTimestamp}
-                  onChange={(e) => setSaleTimestamp(e.target.value)}
+                  onChange={(e) => { setSaleTimestamp(e.target.value); setSaleTimestampManuallySet(true); calibrationDirtyRef.current = false; }}
                   className="w-full px-2.5 py-2 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
                 />
               </div>
+            </div>
+
+            <div>
+              <label htmlFor="sale-customer-location" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                Customer Location (Optional)
+              </label>
+              <input
+                id="sale-customer-location"
+                type="text"
+                maxLength={240}
+                placeholder="Enter the customer's area / city / delivery location"
+                value={customerLocation}
+                onChange={(e) => setCustomerLocation(e.target.value)}
+                className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
             </div>
 
             <div>

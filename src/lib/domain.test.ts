@@ -89,6 +89,25 @@ test('smart natural-language search parses price, cpu gen, ram, storage, gpu, an
   assert.ok(q4.items.every((l) => l.disPrice >= 60000 && l.processor.toLowerCase().includes('core ultra 7')));
 });
 
+test('advanced finder filters narrow by minimum RAM, CPU generation, display size, OS, and brand', () => {
+  const csvPath = path.resolve(process.cwd(), 'public/assets/aistudio/KG_Stock__Rajshahi_dcce8414');
+  const laptops = parseRowsToLaptops(parseDelimitedRows(fs.readFileSync(csvPath, 'utf8')), { datasetId: 'rajshahi' });
+  const base = laptops[0];
+  assert.ok(base);
+  const match = { ...base, id: 'advanced-match', brand: 'Dell', ramGb: 16, cpuGen: 11, displayInches: 14, os: 'Windows 11' };
+  const wrongBrand = { ...match, id: 'wrong-brand', brand: 'HP' };
+  const wrongSpecs = { ...match, id: 'wrong-specs', ramGb: 8, cpuGen: 10, displayInches: 13, os: 'Linux' };
+  const result = filterLaptops([match, wrongBrand, wrongSpecs], {
+    ...EMPTY_FILTERS,
+    brand: 'Dell',
+    minRamGb: 16,
+    minCpuGen: 11,
+    minDisplayInches: 14,
+    operatingSystem: 'Windows',
+  });
+  assert.deepEqual(result.items.map((laptop) => laptop.id), ['advanced-match']);
+});
+
 test('branch-scoped stock stats and brand breakdown count only selected branch units', () => {
   const csvPath = path.resolve(process.cwd(), 'public/assets/aistudio/KG_Stock__Rajshahi_dcce8414');
   const laptops = parseRowsToLaptops(parseDelimitedRows(fs.readFileSync(csvPath, 'utf8')), { datasetId: 'rajshahi' });
@@ -194,6 +213,7 @@ test('live sell formatter outputs exact branch codename, composer fields, locati
     sellingPrice: 50000,
     lookingPct: '90%',
     sourceName: 'Pre Cust Reffer',
+    customerLocation: 'Shaheb Bazar, Rajshahi',
     dealBy: 'Sozib',
     picVideoStatus: 'Sent',
     memoPicStatus: 'Sent',
@@ -217,6 +237,7 @@ test('live sell formatter outputs exact branch codename, composer fields, locati
     'Pic & Video : Sent',
     'Memo Pic : Sent',
     'Deal Time : 110 Min.',
+    'Customer Location : Shaheb Bazar, Rajshahi',
     'Location : Rajshahi',
     'Entry Date : 10 November 2026',
     'Available In Rajshahi : 2 Pcs (RG-1, NM-1)',

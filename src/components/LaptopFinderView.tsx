@@ -195,6 +195,27 @@ export const LaptopFinderView: React.FC<LaptopFinderViewProps> = ({
   );
 
   const analytics = useMemo(() => computeInventoryAnalytics(datasetLaptops), [datasetLaptops]);
+  const availableBrands = useMemo(
+    () => Array.from(new Set(datasetLaptops.map((laptop) => laptop.brand.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [datasetLaptops]
+  );
+  const availableOperatingSystems = useMemo(
+    () => Array.from(new Set(datasetLaptops.map((laptop) => laptop.os.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [datasetLaptops]
+  );
+  const priceSliderMax = useMemo(() => {
+    const maxPrice = Math.max(0, ...datasetLaptops.map((laptop) => {
+      if (filters.priceField === 'asking') return laptop.askPrice;
+      if (filters.priceField === 'border') return laptop.borderPrice;
+      return laptop.disPrice || laptop.askPrice;
+    }));
+    return Math.max(
+      100000,
+      Math.ceil(Math.max(maxPrice, filters.minPrice ?? 0, filters.maxPrice ?? 0) / 5000) * 5000
+    );
+  }, [datasetLaptops, filters.priceField, filters.minPrice, filters.maxPrice]);
+  const sliderMinPrice = Math.max(0, Math.min(priceSliderMax, filters.minPrice ?? 0));
+  const sliderMaxPrice = Math.max(sliderMinPrice, Math.min(priceSliderMax, filters.maxPrice ?? priceSliderMax));
   const maxBucketUnits = useMemo(
     () => Math.max(1, ...analytics.priceBuckets.map((b) => b.totalUnits)),
     [analytics]
@@ -804,6 +825,57 @@ export const LaptopFinderView: React.FC<LaptopFinderViewProps> = ({
             {/* Collapsible Advanced Filter Rail */}
             {showAdvanced && (
               <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-3">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">Price Range Slider</span>
+                    <span className="text-xs font-mono font-semibold text-teal-700 dark:text-teal-300">
+                      {formatCurrency(sliderMinPrice, preferences.currencyFormat)} – {filters.maxPrice === null ? 'Any' : formatCurrency(sliderMaxPrice, preferences.currencyFormat)}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                    <label className="space-y-1.5">
+                      <span className="flex justify-between text-slate-500"><span>Minimum price</span><span>{formatCurrency(sliderMinPrice, preferences.currencyFormat)}</span></span>
+                      <input
+                        aria-label="Minimum laptop price slider"
+                        type="range"
+                        min={0}
+                        max={priceSliderMax}
+                        step={500}
+                        value={sliderMinPrice}
+                        onChange={(event) => {
+                          const next = Number(event.target.value);
+                          setFilters((previous) => ({
+                            ...previous,
+                            minPrice: next <= 0 ? null : next,
+                            maxPrice: previous.maxPrice !== null && next > previous.maxPrice ? next : previous.maxPrice,
+                          }));
+                        }}
+                        className="w-full accent-teal-600"
+                      />
+                    </label>
+                    <label className="space-y-1.5">
+                      <span className="flex justify-between text-slate-500"><span>Maximum price</span><span>{formatCurrency(sliderMaxPrice, preferences.currencyFormat)}</span></span>
+                      <input
+                        aria-label="Maximum laptop price slider"
+                        type="range"
+                        min={0}
+                        max={priceSliderMax}
+                        step={500}
+                        value={sliderMaxPrice}
+                        onChange={(event) => {
+                          const next = Number(event.target.value);
+                          setFilters((previous) => ({
+                            ...previous,
+                            maxPrice: next >= priceSliderMax ? null : next,
+                            minPrice: previous.minPrice !== null && next < previous.minPrice ? next : previous.minPrice,
+                          }));
+                        }}
+                        className="w-full accent-teal-600"
+                      />
+                    </label>
+                  </div>
+                  <p className="text-[10px] text-slate-400">Adjust either slider or use the exact price fields below.</p>
+                </div>
                 <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
                   <div>
                     <label htmlFor="flt-price-field" className="block text-[11px] font-medium text-slate-500 mb-1">Price Basis</label>
@@ -843,7 +915,19 @@ export const LaptopFinderView: React.FC<LaptopFinderViewProps> = ({
                     />
                   </div>
                   <div>
-                    <label htmlFor="flt-ram" className="block text-[11px] font-medium text-slate-500 mb-1">RAM</label>
+                    <label htmlFor="flt-brand" className="block text-[11px] font-medium text-slate-500 mb-1">Brand</label>
+                    <select
+                      id="flt-brand"
+                      value={filters.brand ?? ''}
+                      onChange={(e) => setFilters((p) => ({ ...p, brand: e.target.value || null }))}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    >
+                      <option value="">All Brands</option>
+                      {availableBrands.map((brand) => <option key={brand} value={brand}>{brand}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="flt-ram" className="block text-[11px] font-medium text-slate-500 mb-1">RAM (Exact)</label>
                     <select
                       id="flt-ram"
                       value={filters.ramGb ?? ''}
@@ -855,6 +939,22 @@ export const LaptopFinderView: React.FC<LaptopFinderViewProps> = ({
                       <option value="8">8 GB</option>
                       <option value="16">16 GB</option>
                       <option value="32">32 GB</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="flt-min-ram" className="block text-[11px] font-medium text-slate-500 mb-1">Minimum RAM</label>
+                    <select
+                      id="flt-min-ram"
+                      value={filters.minRamGb ?? ''}
+                      onChange={(e) => setFilters((p) => ({ ...p, minRamGb: e.target.value ? Number(e.target.value) : null }))}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    >
+                      <option value="">Any</option>
+                      <option value="8">8 GB+</option>
+                      <option value="16">16 GB+</option>
+                      <option value="24">24 GB+</option>
+                      <option value="32">32 GB+</option>
+                      <option value="64">64 GB+</option>
                     </select>
                   </div>
                   <div>
@@ -870,6 +970,45 @@ export const LaptopFinderView: React.FC<LaptopFinderViewProps> = ({
                       <option value="256">256GB+</option>
                       <option value="512">512GB+</option>
                       <option value="1024">1TB+</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="flt-min-cpu-gen" className="block text-[11px] font-medium text-slate-500 mb-1">Minimum CPU Gen</label>
+                    <select
+                      id="flt-min-cpu-gen"
+                      value={filters.minCpuGen ?? ''}
+                      onChange={(e) => setFilters((p) => ({ ...p, minCpuGen: e.target.value ? Number(e.target.value) : null }))}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    >
+                      <option value="">Any Gen</option>
+                      {[8, 9, 10, 11, 12, 13, 14].map((gen) => <option key={gen} value={gen}>{gen}th Gen+</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="flt-display-size" className="block text-[11px] font-medium text-slate-500 mb-1">Minimum Display</label>
+                    <select
+                      id="flt-display-size"
+                      value={filters.minDisplayInches ?? ''}
+                      onChange={(e) => setFilters((p) => ({ ...p, minDisplayInches: e.target.value ? Number(e.target.value) : null }))}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    >
+                      <option value="">Any Size</option>
+                      <option value="13">13&quot;+</option>
+                      <option value="14">14&quot;+</option>
+                      <option value="15">15&quot;+</option>
+                      <option value="16">16&quot;+</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="flt-os" className="block text-[11px] font-medium text-slate-500 mb-1">Operating System</label>
+                    <select
+                      id="flt-os"
+                      value={filters.operatingSystem ?? ''}
+                      onChange={(e) => setFilters((p) => ({ ...p, operatingSystem: e.target.value || null }))}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    >
+                      <option value="">Any OS</option>
+                      {availableOperatingSystems.map((os) => <option key={os} value={os}>{os}</option>)}
                     </select>
                   </div>
                   <div>

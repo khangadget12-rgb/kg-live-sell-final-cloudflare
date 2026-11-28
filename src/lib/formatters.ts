@@ -286,6 +286,7 @@ export function buildLiveSellMessage(params: {
   memoPicStatus?: string;
   dealTime?: string;
   remarks?: string;
+  customerLocation?: string;
   remainingRajshahiQty: number;
   remainingBranchStock?: Partial<Record<BranchCode, number>>;
   monthlyBranchCounts: MonthlyBranchSalesCounts;
@@ -307,6 +308,7 @@ export function buildLiveSellMessage(params: {
     memoPicStatus,
     dealTime,
     remarks,
+    customerLocation,
     remainingRajshahiQty,
     remainingBranchStock,
     monthlyBranchCounts,
@@ -405,6 +407,9 @@ export function buildLiveSellMessage(params: {
 
   const remarksClean = (remarks || '').trim();
   if (remarksClean) lines.push(`Remarks : ${remarksClean}`);
+
+  const customerLocationClean = (customerLocation || '').trim();
+  if (customerLocationClean) lines.push(`Customer Location : ${customerLocationClean}`);
 
   lines.push(`Location : ${locationStr}`);
   lines.push(`Entry Date : ${entryStr}`);

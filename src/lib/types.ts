@@ -183,6 +183,7 @@ export interface SaleRecord {
   sheetName: string;
   employeeId: number;
   employeeName: string;
+  customerLocation?: string;
   soldAt: string;
   status: 'completed' | 'voided';
   voidReason: string | null;
@@ -292,10 +293,12 @@ export interface RajshahiSyncStatus {
 }
 
 export interface RealtimeSyncEvent {
-  type: 'connected' | 'inventory_updated' | 'datasets_updated' | 'sync_status_updated';
+  type: 'connected' | 'inventory_updated' | 'datasets_updated' | 'sync_status_updated' | 'sales_counts_updated';
   reason?: string;
   summary?: string;
   syncVersion?: number;
   changedAt?: string;
+  monthKey?: string;
+  timeZone?: string;
 }
 

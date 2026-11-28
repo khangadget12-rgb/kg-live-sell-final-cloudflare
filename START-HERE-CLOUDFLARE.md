@@ -1,117 +1,33 @@
-# KG Live Sell 2.5.0 — Clean Cloudflare Deployment
+# KG Live Sell 2.5.4 — Existing Cloudflare Deployment Update
 
-This is a **complete repository**, not a patch/update. It is designed to avoid the stale Bun patch failure from earlier attempts.
+This package is an update to the existing KG Live Sell Cloudflare application, not instructions to create a second Worker or database.
 
-## Before you start
+## Before deploying
 
-1. Download and extract this ZIP.
-2. Do not upload the ZIP itself. Upload the extracted folder contents.
-3. Use a **new empty private GitHub repository**. Do not reuse the old repository for this clean deployment; the previous build logs prove it still contained the invalid `patches/iconv-lite@0.7.0.patch` file and/or Bun dependency configuration.
-4. Keep the old Cloudflare Worker and its resources until the new site passes the health and login tests. The old Worker is a rollback reference.
+1. Make a database backup using the existing application's backup feature and retain a copy outside the Worker.
+2. Confirm the current production Worker name in Cloudflare Dashboard → Workers & Pages. The Cloudflare logs provided for this project identify it as `kg-live-sell-final-cloudflare`; this package's `wrangler.toml` is aligned to that name.
+3. Confirm the Worker still uses the `APP_DB` binding to the `KGAppDatabase` Durable Object and the existing `v1` migration identity.
+4. Use the same GitHub repository and production branch already connected to this Worker. Upload/commit the complete contents of this release, preserving the repository's directory structure.
+5. Preserve existing Workers Builds commands, build variables, runtime variables, and secrets. Do not add a new Worker or a new Durable Object namespace.
 
-## Part A — Create a clean GitHub repository
+## Deploy
 
-1. Sign in to GitHub.
-2. Create a new **Private** repository named `kg-live-sell-final-cloudflare`.
-3. Do not initialize it with a README, license, or `.gitignore`.
-4. Open the empty repository and choose **Add file → Upload files**.
-5. Upload the **contents** of the extracted ZIP to the repository root, preserving folder structure.
-6. Commit all files to the `main` branch.
-7. Confirm the root contains `package.json`, `wrangler.toml`, `cloudflare-worker.ts`, `server.ts`, `scripts/`, `server/`, `src/`, and `public/`.
-8. Confirm the repository does **not** contain `bun.lock`, `bun.lockb`, `patches/`, `package-lock` from an older package, or `patchedDependencies` in `package.json`.
+Let the existing Cloudflare Workers Builds pipeline build and deploy the update. If deploying manually, use the repository's existing build and deploy procedure. Do not change the Worker name, `APP_DB` binding, `KGAppDatabase` class, or `v1` migration tag.
 
-## Part B — Create a separate clean Worker
+On first startup, database migration 5 runs automatically. It adds `sales.customer_location` only if missing and creates `monthly_branch_sales_calibrations`; existing sales and inventory rows are retained. Calibration records store count offsets and audit information; historical sale records are not rewritten.
 
-Do not delete the existing Worker yet.
+## Verify after deployment
 
-1. Open Cloudflare Dashboard → **Workers & Pages**.
-2. Choose **Create application → Create Worker**.
-3. Name the new Worker exactly `kg-live-sell-final`.
-4. Deploy the starter Worker.
-5. Open the new Worker → **Settings → Builds** (or **Builds** depending on dashboard layout).
-6. Connect GitHub and select `kg-live-sell-final-cloudflare`.
-7. Production branch: `main`.
-8. Root directory: `/`.
+1. Open `/api/health` and confirm the service reports a healthy database connection.
+2. Sign in using an existing account. Do not use first-run setup on a populated production database.
+3. As Admin or Super Admin, open Live Sell → **Adjust Branch Counts** and verify the four branch values load. Do not save a calibration unless you intend to change the displayed monthly totals.
+4. Open Laptop Finder and verify the price sliders and new filters are available.
+5. In Live Sell, enter a customer location in the optional field, verify it appears in the preview, and confirm a real sale only when appropriate. Check the location in Sales Ledger.
+6. With multiple sessions open, confirm a sale or calibration refreshes the monthly branch counters across sessions.
 
-The `name` in this package's `wrangler.toml` is `kg-live-sell-final`. Do not rename it unless you also change the dashboard Worker and commit the matching `wrangler.toml`.
+## Safety notes
 
-## Part C — Configure Workers Builds (important)
-
-Under the Worker's **Settings → Builds → Build variables and secrets**, add:
-
-- Name: `SKIP_DEPENDENCY_INSTALL`
-- Value: `1`
-- Type: regular build variable, **not a secret**
-
-This must be a **Build variable**, not a Runtime variable. Do not add this variable under Runtime variables and secrets.
-
-Set these commands:
-
-**Build command**
-
-```bash
-npm install --no-audit --no-fund && npm run build
-```
-
-**Deploy command**
-
-```bash
-npx wrangler deploy
-```
-
-Root directory: `/`.
-
-The `SKIP_DEPENDENCY_INSTALL=1` build variable tells Workers Builds to skip its automatic package-manager install. The explicit build command then uses npm. The new repository intentionally has no Bun lockfile or patch file, so the old Bun patch cannot be selected.
-
-## Part D — Verify the build log
-
-The build log should show `npm install`, not `bun install`.
-
-During `npm run build`, look for a message similar to:
-
-```text
-[cloudflare-build] Removed iconv-lite browser mapping (0.7.0).
-[cloudflare-build] Checked 1 iconv-lite package(s); adjusted 1.
-```
-
-Then Vite should build and `npx wrangler deploy` should report the Worker name `kg-live-sell-final` and bindings:
-
-- `env.APP_DB` → Durable Object `KGAppDatabase`
-- `env.ASSETS` → Static Assets
-
-If the log still says `bun install`, stop. That means you are not deploying from the new clean repository or `SKIP_DEPENDENCY_INSTALL` was not saved under Build variables.
-
-## Part E — First-run setup and checks
-
-The new Worker URL will be similar to:
-
-`https://kg-live-sell-final.<your-account-subdomain>.workers.dev`
-
-Open these endpoints on that exact URL:
-
-- `/api/health` — expected JSON includes `"ok": true` and `"db": "connected"`.
-- `/api/auth/bootstrap-status` — on an empty new Durable Object database, expected `"needsSetup": true` and `"hasEnvOverride": false`.
-
-Then open `/` and immediately create the first Super Admin. Because the optional `SUPER_ADMIN_PASSCODE` secret is not used, anyone who reaches the setup screen before you could claim the first account. Do not share the URL until the first Super Admin is created.
-
-## Database and old resources
-
-- This release uses the `KGAppDatabase` SQLite Durable Object. It does not use D1 or R2.
-- The new Worker name creates a **new Durable Object namespace/database** through the `v1` migration. The older Worker and its database are left untouched.
-- The older D1 database from the earlier 2.3.x release is not used by this 2.5.0 application. Keep it as a separate archive until you're certain you no longer need it.
-- Do not change `name`, the Durable Object class name `KGAppDatabase`, or the migration tag `v1` after deploying; these identify the new app's persistent database.
-- Do not delete the old Worker until the new app passes login, sales, inventory, ledger, account-management, activity, and backup/restore tests.
-
-## Included app behavior
-
-- Staff, Admin, and Super Admin can use Live Sell Composer and create sale entries.
-- Staff can view the complete Sales Ledger and branch sales; staff are not tied to one branch and choose a branch per sale.
-- Admin and Super Admin can create and delete accounts, including Super Admin accounts, subject to last-active-Super-Admin protection.
-- Only Admin and Super Admin can void sales.
-- Lightweight five-second sync-version polling is included.
-- Admin and Super Admin can view user session and active-time reports.
-- Existing inventory, Laptop Finder, Accessories, refill reminders, reports, SpecLedger, and Google Sheets functionality remain in the source project.
-
-## Recovery
-
-If the new build fails, keep the old Worker. Send the complete build log. Do not delete Durable Objects or migrations to troubleshoot a build failure.
+- Do not reset the Durable Object or delete existing database rows.
+- Keep the pre-deployment backup until the update has passed login, sales, finder, ledger, account and backup checks.
+- If the dashboard Worker name differs from `kg-live-sell-final-cloudflare`, stop and align `wrangler.toml` to the exact existing name before deployment. Never knowingly deploy this update to a new Worker if the intention is to preserve the current database.
+- A full production build was not run in the preparation environment because dependency installation did not complete; the release passed local syntax, targeted TypeScript and test checks. Let Cloudflare's build pipeline validate the actual deployment before traffic is switched.

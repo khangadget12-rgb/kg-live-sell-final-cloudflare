@@ -244,21 +244,91 @@ function getYearMonthKey(isoString: string, timeZone?: string): string {
   return `${valid.getFullYear()}-${String(valid.getMonth() + 1).padStart(2, '0')}`;
 }
 
-function getMonthlyBranchCounts(soldAtIso: string, timeZone?: string): MonthlyBranchSalesCounts {
+function normalizeSalesTimeZone(timeZone?: string): string {
+  const candidate = String(timeZone || 'UTC').trim() || 'UTC';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: candidate }).format(new Date());
+    return candidate;
+  } catch {
+    return 'UTC';
+  }
+}
+
+function zonedMidnightToIso(year: number, month: number, day: number, timeZone: string): string {
+  const targetUtc = Date.UTC(year, month - 1, day, 0, 0, 0);
+  let guess = targetUtc;
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  });
+  for (let i = 0; i < 3; i += 1) {
+    const parts = formatter.formatToParts(new Date(guess));
+    const part = (type: string) => Number(parts.find((p) => p.type === type)?.value || 0);
+    const representedAsUtc = Date.UTC(
+      part('year'), part('month') - 1, part('day'), part('hour'), part('minute'), part('second')
+    );
+    guess = targetUtc - (representedAsUtc - guess);
+  }
+  return new Date(guess).toISOString();
+}
+
+function getMonthUtcBounds(monthKey: string, timeZone: string): { start: string; end: string } {
+  const [year, month] = monthKey.split('-').map(Number);
+  if (!year || !month || month < 1 || month > 12) {
+    throw new Error('Invalid sales month');
+  }
+  return {
+    start: zonedMidnightToIso(year, month, 1, timeZone),
+    end: zonedMidnightToIso(year, month + 1, 1, timeZone),
+  };
+}
+
+function getActualMonthlyBranchCounts(soldAtIso: string, timeZone?: string): MonthlyBranchSalesCounts {
   const counts: MonthlyBranchSalesCounts = { RG: 0, NM: 0, JSM: 0, CC: 0 };
-  const targetYm = getYearMonthKey(soldAtIso, timeZone);
+  const normalizedTimeZone = normalizeSalesTimeZone(timeZone);
+  const targetYm = getYearMonthKey(soldAtIso, normalizedTimeZone);
   const targetMs = Date.parse(soldAtIso) || Date.now();
-  const rows = db
-    .prepare("SELECT branch, sold_at FROM sales WHERE status = 'completed'")
-    .all() as Array<{ branch: BranchCode; sold_at: string }>;
-  for (const r of rows) {
-    const rowMs = Date.parse(r.sold_at);
-    if (Number.isFinite(rowMs) && rowMs > targetMs) continue;
-    if (getYearMonthKey(r.sold_at, timeZone) === targetYm && isBranchCode(r.branch)) {
-      counts[r.branch] += 1;
-    }
+  const targetUpperBound = new Date(targetMs).toISOString();
+  const bounds = getMonthUtcBounds(targetYm, normalizedTimeZone);
+  const countForBranch = db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM sales
+    WHERE branch = ? AND status = 'completed'
+      AND sold_at >= ? AND sold_at < ? AND sold_at <= ?
+  `);
+
+  for (const branch of ['RG', 'NM', 'JSM', 'CC'] as const) {
+    const row = countForBranch.get(branch, bounds.start, bounds.end, targetUpperBound) as { total: number };
+    counts[branch] = Number(row?.total || 0);
   }
   return counts;
+}
+
+function getMonthlyBranchCounts(soldAtIso: string, timeZone?: string): MonthlyBranchSalesCounts {
+  const normalizedTimeZone = normalizeSalesTimeZone(timeZone);
+  const targetYm = getYearMonthKey(soldAtIso, normalizedTimeZone);
+  const actualCounts = getActualMonthlyBranchCounts(soldAtIso, normalizedTimeZone);
+  const calibrationRows = db.prepare(`
+    SELECT branch, count_offset
+    FROM monthly_branch_sales_calibrations
+    WHERE month_key = ? AND time_zone = ?
+  `).all(targetYm, normalizedTimeZone) as Array<{ branch: BranchCode; count_offset: number }>;
+  const offsets: Partial<MonthlyBranchSalesCounts> = {};
+  for (const row of calibrationRows) {
+    if (isBranchCode(row.branch)) offsets[row.branch] = Number(row.count_offset) || 0;
+  }
+  return {
+    RG: Math.max(0, actualCounts.RG + (offsets.RG || 0)),
+    NM: Math.max(0, actualCounts.NM + (offsets.NM || 0)),
+    JSM: Math.max(0, actualCounts.JSM + (offsets.JSM || 0)),
+    CC: Math.max(0, actualCounts.CC + (offsets.CC || 0)),
+  };
 }
 
 function syncRefillAlertsForLaptop(laptop: LaptopRecord, nowIso: string): Array<{
@@ -1791,8 +1861,59 @@ export async function startServer(options: { cloudflare?: boolean } = {}) {
     const rawSoldAt = String(req.query.soldAt || '').trim();
     const parsedSoldAt = rawSoldAt ? Date.parse(rawSoldAt) : NaN;
     const soldAtIso = Number.isFinite(parsedSoldAt) ? new Date(parsedSoldAt).toISOString() : new Date().toISOString();
-    const timeZone = req.query.timeZone ? String(req.query.timeZone) : undefined;
+    const timeZone = normalizeSalesTimeZone(req.query.timeZone ? String(req.query.timeZone) : undefined);
     res.json({ counts: getMonthlyBranchCounts(soldAtIso, timeZone) });
+  });
+
+  app.post('/api/sales/monthly-counts/calibrate', requireAuth, requireRole('super_admin', 'admin'), (req: AuthedRequest, res) => {
+    const rawSoldAt = String(req.body?.soldAt || '').trim();
+    const parsedSoldAt = rawSoldAt ? Date.parse(rawSoldAt) : NaN;
+    const soldAtIso = Number.isFinite(parsedSoldAt) ? new Date(parsedSoldAt).toISOString() : new Date().toISOString();
+    const timeZone = normalizeSalesTimeZone(req.body?.timeZone ? String(req.body.timeZone) : undefined);
+    const monthKey = getYearMonthKey(soldAtIso, timeZone);
+    const rawCounts = req.body?.counts as Partial<Record<BranchCode, unknown>> | undefined;
+
+    if (!rawCounts || !['RG', 'NM', 'JSM', 'CC'].every((branch) => {
+      const value = Number(rawCounts[branch as BranchCode]);
+      return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000;
+    })) {
+      res.status(400).json({ error: 'Provide a whole-number sell count from 0 to 1,000,000 for every branch.' });
+      return;
+    }
+
+    try {
+      const nowIso = new Date().toISOString();
+      const calibration = db.prepare(`
+        INSERT INTO monthly_branch_sales_calibrations
+          (month_key, time_zone, branch, count_offset, calibrated_at, calibrated_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(month_key, time_zone, branch) DO UPDATE SET
+          count_offset = excluded.count_offset,
+          calibrated_at = excluded.calibrated_at,
+          calibrated_by = excluded.calibrated_by
+      `);
+      db.transaction(() => {
+        const actualCounts = getActualMonthlyBranchCounts(soldAtIso, timeZone);
+        for (const branch of ['RG', 'NM', 'JSM', 'CC'] as const) {
+          const desiredCount = Number(rawCounts[branch]);
+          calibration.run(monthKey, timeZone, branch, desiredCount - actualCounts[branch], nowIso, req.user!.id);
+        }
+      })();
+
+      logAudit(
+        req.user!.fullName,
+        req.user!.role,
+        'CALIBRATE_MONTHLY_BRANCH_SELL_COUNTS',
+        'sales_counts',
+        `${monthKey}:${timeZone}`,
+        `Set monthly branch sell counts: RG=${Number(rawCounts.RG)}, NM=${Number(rawCounts.NM)}, JSM=${Number(rawCounts.JSM)}, CC=${Number(rawCounts.CC)}`
+      );
+      broadcastRealtimeEvent('sales_counts_updated', { monthKey, timeZone });
+      res.json({ monthKey, timeZone, counts: getMonthlyBranchCounts(soldAtIso, timeZone) });
+    } catch (error) {
+      console.error('Monthly branch sales calibration failed:', error);
+      res.status(500).json({ error: 'Could not save branch sell count calibration.' });
+    }
   });
 
   app.post('/api/sales', requireAuth, (req: AuthedRequest, res) => {

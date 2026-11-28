@@ -1,18 +1,18 @@
-KG LIVE SELL 2.5.0 — CLEAN RESTART CHECKLIST
+KG LIVE SELL 2.5.4 — EXISTING CLOUDFLARE DEPLOYMENT UPDATE
 
-[ ] Download and extract the full ZIP.
-[ ] Create a NEW EMPTY PRIVATE GitHub repo: kg-live-sell-final-cloudflare.
-[ ] Upload extracted folder CONTENTS to repo root, preserving folders.
-[ ] Confirm no bun.lock, bun.lockb, patches/ folder, or patchedDependencies.
-[ ] Keep the old Worker and its Durable Object untouched for rollback.
-[ ] Create a NEW Worker named kg-live-sell-final.
-[ ] Connect the new Worker to the new GitHub repository; branch main; root /.
-[ ] Under Settings > Builds > Build variables and secrets add SKIP_DEPENDENCY_INSTALL=1.
-[ ] Build command: npm install --no-audit --no-fund && npm run build
-[ ] Deploy command: npx wrangler deploy
-[ ] Verify logs run npm install, not bun install.
-[ ] Verify /api/health returns ok:true and db:connected.
-[ ] Verify /api/auth/bootstrap-status returns needsSetup:true on a fresh database.
-[ ] Claim the first Super Admin account immediately.
-[ ] Test sales, ledger, inventory, accounts, activity, backup/restore.
-[ ] Only then consider deleting the old Worker; do not delete old DB resources until archived.
+[ ] Back up the existing production Durable Object database using the app's backup feature.
+[ ] Confirm the current Worker name in Cloudflare Dashboard. Supplied logs identify kg-live-sell-final-cloudflare.
+[ ] Confirm wrangler.toml name matches the existing Worker; this release is configured for kg-live-sell-final-cloudflare.
+[ ] Use the SAME GitHub repository, production branch, and Cloudflare Workers Builds configuration already connected to the existing Worker.
+[ ] Upload/commit the COMPLETE release contents, preserving the directory structure.
+[ ] Preserve existing APP_DB -> KGAppDatabase binding, Durable Object namespace, v1 migration identity, variables, and secrets.
+[ ] Do NOT create a new Worker, create a new Durable Object namespace, or reset/delete the existing database.
+[ ] Let the existing Cloudflare build/deploy pipeline run; review the complete build log before considering the update complete.
+[ ] Verify /api/health reports a healthy database connection.
+[ ] Sign in with an existing account; do NOT use first-run setup on the populated database.
+[ ] As Admin/Super Admin, verify Live Sell -> Adjust Branch Counts (only save intentional monthly count changes).
+[ ] Verify Laptop Finder advanced filters and both price sliders.
+[ ] Verify optional customer location appears in Live Sell preview and Sales Ledger.
+[ ] Verify active sessions refresh branch counts after sale/calibration events.
+[ ] Confirm login, sales, ledger, inventory, accounts, activity, and backup/restore still work.
+[ ] Keep the pre-deployment backup until all checks pass.

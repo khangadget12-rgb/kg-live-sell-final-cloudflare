@@ -305,6 +305,16 @@ export const api = {
     return apiFetch<{ counts: MonthlyBranchSalesCounts }>(`/api/sales/monthly-counts${qs ? `?${qs}` : ''}`);
   },
 
+  calibrateMonthlyBranchCounts: (payload: {
+    soldAt?: string;
+    timeZone?: string;
+    counts: MonthlyBranchSalesCounts;
+  }) =>
+    apiFetch<{ monthKey: string; timeZone: string; counts: MonthlyBranchSalesCounts }>(
+      '/api/sales/monthly-counts/calibrate',
+      { method: 'POST', body: JSON.stringify(payload) }
+    ),
+
   createSale: (payload: {
     branch: BranchCode;
     laptopId: string;
@@ -314,6 +324,7 @@ export const api = {
     lookingPct?: string;
     customerName?: string;
     customerPhone?: string;
+    customerLocation?: string;
     sourceName?: string;
     dealBy?: string;
     assistBy?: string;
